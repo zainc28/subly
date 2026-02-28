@@ -1,0 +1,176 @@
+/* ── Hide native YouTube subtitles ────────────────────────────────────────── */
+
+.ytp-caption-window-container {
+  visibility: hidden !important;
+}
+
+/* ── Subly overlay container ──────────────────────────────────────────────── */
+
+#subly-overlay {
+  position: fixed;
+  bottom: 90px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2147483647;
+
+  /* Glassmorphism card */
+  background: rgba(8, 8, 18, 0.82);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 14px;
+  padding: 14px 20px 12px;
+
+  min-width: 280px;
+  max-width: 80vw;
+  text-align: center;
+  cursor: grab;
+  user-select: none;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+
+  display: none; /* JS sets display:flex to show */
+  flex-direction: column;
+  gap: 6px;
+
+  box-shadow:
+    0 8px 32px rgba(0, 0, 0, 0.5),
+    0 0 0 1px rgba(124, 58, 237, 0.15) inset;
+
+  animation: subly-fadein 0.2s ease;
+}
+
+@keyframes subly-fadein {
+  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
+  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── Translation (top layer) ─────────────────────────────────────────────── */
+
+.subly-translation {
+  font-size: 13px;
+  color: rgba(148, 163, 184, 0.85);
+  line-height: 1.4;
+  letter-spacing: 0.01em;
+  min-height: 18px;
+}
+
+/* ── Word breakdown (middle layer) ───────────────────────────────────────── */
+
+.subly-words {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 6px;
+  min-height: 28px;
+  align-items: center;
+}
+
+.subly-word {
+  display: inline-block;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  cursor: pointer;
+  border-bottom: 2px solid currentColor;
+  padding-bottom: 1px;
+  border-radius: 2px;
+  transition: opacity 0.15s, transform 0.15s;
+}
+
+.subly-word:hover {
+  opacity: 0.85;
+  transform: translateY(-1px);
+}
+
+.subly-word:active { transform: translateY(0) scale(0.96); }
+
+/* ── Transliteration (bottom layer) ─────────────────────────────────────── */
+
+.subly-transliteration {
+  font-size: 13px;
+  color: rgba(167, 139, 250, 0.7);
+  font-style: italic;
+  letter-spacing: 0.03em;
+  min-height: 16px;
+}
+
+/* ── Word tooltip ─────────────────────────────────────────────────────────── */
+
+#subly-tooltip {
+  position: absolute;
+  display: none;
+  background: rgba(15, 15, 30, 0.96);
+  border: 1px solid rgba(124, 58, 237, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  pointer-events: none;
+  z-index: 1;
+  white-space: nowrap;
+  transform: translateX(-50%);
+  box-shadow: 0 4px 20px rgba(0,0,0,0.6);
+
+  display: none; /* JS sets display:flex to show */
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  min-width: 80px;
+}
+
+.subly-tip-original {
+  font-size: 16px;
+  font-weight: 700;
+  color: #a78bfa;
+}
+
+.subly-tip-romaji {
+  font-size: 12px;
+  color: #60a5fa;
+  font-style: italic;
+}
+
+.subly-tip-translation {
+  font-size: 12px;
+  color: #94a3b8;
+}
+
+/* ── Toast notifications ──────────────────────────────────────────────────── */
+
+.subly-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 2147483647;
+  padding: 10px 16px;
+  border-radius: 10px;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  font-weight: 600;
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 0.25s, transform 0.25s;
+  max-width: 260px;
+}
+
+.subly-toast--visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.subly-toast--success {
+  background: rgba(52, 211, 153, 0.15);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  color: #6ee7b7;
+}
+
+.subly-toast--info {
+  background: rgba(59, 130, 246, 0.15);
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  color: #93c5fd;
+}
+
+.subly-toast--error {
+  background: rgba(239, 68, 68, 0.15);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  color: #fca5a5;
+}

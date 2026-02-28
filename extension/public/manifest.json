@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Subly — Language Learning Subtitles",
+  "short_name": "Subly",
+  "version": "1.0.0",
+  "description": "Enhanced 3-layer subtitles for YouTube: original · transliteration · translation. Click any word to save it.",
+  "permissions": [
+    "activeTab",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "http://localhost:3000/*",
+    "https://*.railway.app/*",
+    "https://*.onrender.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.youtube.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Subly",
+    "default_icon": {
+      "48": "icons/icon48.png"
+    }
+  },
+  "icons": {
+    "48": "icons/icon48.png"
+  }
+}
