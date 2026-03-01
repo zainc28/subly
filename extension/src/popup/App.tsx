@@ -4,10 +4,14 @@ import { getDictionary, deleteWord, getSubscription } from '../lib/api';
 import type { DictionaryEntry, UserSubscription } from '../lib/api';
 import type { User } from '@supabase/supabase-js';
 
+// ── Constants ─────────────────────────────────────────────────────────────────
+
+const WEBSITE_URL = (import.meta.env.VITE_WEBSITE_URL as string) || 'https://subly.app';
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 type View = 'auth' | 'dashboard';
-type AuthMode = 'signin' | 'signup';
+type AuthMode = 'signin' | 'signup' | 'forgot';
 
 // ── Stars background ─────────────────────────────────────────────────────────
 
@@ -42,6 +46,12 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
+  function switchMode(next: AuthMode) {
+    setMode(next);
+    setError('');
+    setSuccess('');
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError('');
@@ -49,7 +59,13 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
     setLoading(true);
 
     try {
-      if (mode === 'signin') {
+      if (mode === 'forgot') {
+        const { error: err } = await supabase.auth.resetPasswordForEmail(email, {
+          redirectTo: `${WEBSITE_URL}/reset-password`,
+        });
+        if (err) throw err;
+        setSuccess('Reset link sent — check your email.');
+      } else if (mode === 'signin') {
         const { data, error: err } = await supabase.auth.signInWithPassword({ email, password });
         if (err) throw err;
         if (data.user) onAuth(data.user);
@@ -72,7 +88,9 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
   return (
     <div className="view auth-view">
       <div className="auth-logo">
-        <div className="logo-mark">S</div>
+        <div className="logo-mark">
+          <span>S</span>
+        </div>
         <div className="logo-text">
           <span className="logo-name">Subly</span>
           <span className="logo-tagline">Language learning, reimagined</span>
@@ -80,22 +98,31 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
       </div>
 
       <form className="auth-form" onSubmit={handleSubmit}>
-        <div className="tab-row">
-          <button
-            type="button"
-            className={`tab ${mode === 'signin' ? 'tab--active' : ''}`}
-            onClick={() => { setMode('signin'); setError(''); setSuccess(''); }}
-          >
-            Sign In
-          </button>
-          <button
-            type="button"
-            className={`tab ${mode === 'signup' ? 'tab--active' : ''}`}
-            onClick={() => { setMode('signup'); setError(''); setSuccess(''); }}
-          >
-            Sign Up
-          </button>
-        </div>
+        {mode !== 'forgot' ? (
+          <div className="tab-row">
+            <button
+              type="button"
+              className={`tab ${mode === 'signin' ? 'tab--active' : ''}`}
+              onClick={() => switchMode('signin')}
+            >
+              Sign In
+            </button>
+            <button
+              type="button"
+              className={`tab ${mode === 'signup' ? 'tab--active' : ''}`}
+              onClick={() => switchMode('signup')}
+            >
+              Sign Up
+            </button>
+          </div>
+        ) : (
+          <div className="forgot-header">
+            <button type="button" className="back-link" onClick={() => switchMode('signin')}>
+              ← Back to Sign In
+            </button>
+            <p className="forgot-desc">Enter your email to receive a password reset link.</p>
+          </div>
+        )}
 
         <div className="form-group">
           <label className="form-label">Email</label>
@@ -110,24 +137,41 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
           />
         </div>
 
-        <div className="form-group">
-          <label className="form-label">Password</label>
-          <input
-            className="form-input"
-            type="password"
-            placeholder="••••••••"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
-          />
-        </div>
+        {mode !== 'forgot' && (
+          <div className="form-group">
+            <div className="form-label-row">
+              <label className="form-label">Password</label>
+              {mode === 'signin' && (
+                <button type="button" className="forgot-link" onClick={() => switchMode('forgot')}>
+                  Forgot password?
+                </button>
+              )}
+            </div>
+            <input
+              className="form-input"
+              type="password"
+              placeholder="••••••••"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              autoComplete={mode === 'signin' ? 'current-password' : 'new-password'}
+            />
+          </div>
+        )}
 
         {error && <div className="alert alert--error">{error}</div>}
         {success && <div className="alert alert--success">{success}</div>}
 
         <button className="btn btn--primary btn--full" type="submit" disabled={loading}>
-          {loading ? <span className="spinner" /> : mode === 'signin' ? 'Sign In' : 'Create Account'}
+          {loading ? (
+            <span className="spinner" />
+          ) : mode === 'signin' ? (
+            'Sign In'
+          ) : mode === 'signup' ? (
+            'Create Account'
+          ) : (
+            'Send Reset Link'
+          )}
         </button>
       </form>
     </div>
@@ -137,7 +181,6 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
 // ── Dictionary definition lookup (Free Dictionary API, no key needed) ────────
 
 async function fetchDefinition(englishWord: string): Promise<string> {
-  // Only attempt single/double-word purely alphabetic translations
   const words = englishWord.trim().split(/\s+/);
   if (words.length > 3 || !/^[a-zA-Z\s''-]+$/.test(englishWord.trim())) return '';
   const lookup = words[0].toLowerCase().replace(/[^a-z]/g, '');
@@ -196,7 +239,6 @@ function DashboardView({
         .then((entries) => {
           const recent = entries.slice(0, 10);
           setWords(recent);
-          // Fetch definitions for each word's English translation in parallel
           recent.forEach((entry) => {
             if (!entry.translation) return;
             fetchDefinition(entry.translation).then((def) => {
@@ -238,7 +280,11 @@ function DashboardView({
   }
 
   function openFullDictionary() {
-    chrome.tabs.create({ url: 'https://subly.app/dictionary' });
+    chrome.tabs.create({ url: `${WEBSITE_URL}/dictionary` });
+  }
+
+  function openWebsite() {
+    chrome.tabs.create({ url: WEBSITE_URL });
   }
 
   const usedPct =
@@ -249,10 +295,12 @@ function DashboardView({
   return (
     <div className="view dashboard-view">
       <header className="dash-header">
-        <div className="dash-logo">
-          <div className="logo-mark logo-mark--sm">S</div>
+        <button className="dash-logo" onClick={openWebsite} title="Open Subly Dashboard">
+          <div className="logo-mark logo-mark--sm">
+            <span>S</span>
+          </div>
           <span className="logo-name">Subly</span>
-        </div>
+        </button>
         <button className="btn btn--ghost btn--sm" onClick={onSignOut}>
           Sign out
         </button>
@@ -333,9 +381,6 @@ function DashboardView({
                 </div>
                 {definitions[entry.id] && (
                   <div className="word-card__definition">{definitions[entry.id]}</div>
-                )}
-                {entry.context_sentence && (
-                  <div className="word-card__context">{entry.context_sentence}</div>
                 )}
                 <button
                   className="word-card__delete"

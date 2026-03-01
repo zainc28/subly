@@ -203,10 +203,8 @@ function renderSubtitle(sub: EnhancedSubtitle) {
   if (!overlay) return;
   const { translationEl, wordsEl, translitEl } = getOverlayEls();
 
-  // Translation row: full sentence as plain text — no per-word spans here
-  translationEl.textContent = sub.translation || '';
+  translationEl.innerHTML = '';
   translationEl.style.opacity = '1';
-
   wordsEl.innerHTML = '';
   translitEl.innerHTML = '';
 
@@ -217,17 +215,30 @@ function renderSubtitle(sub: EnhancedSubtitle) {
     tokens.forEach((wb, i) => {
       // Original language row — colored, hoverable, clickable
       wordsEl.appendChild(buildWordSpan(wb.word, i, wb, sub));
-      // Romaji row — same color index as its corresponding original word
+
+      // Romaji row — same color index → color-matches the original word
       if (hasTranslit && wb.transliteration && wb.transliteration !== wb.word) {
         translitEl.appendChild(buildWordSpan(wb.transliteration, i, wb, sub));
       }
+
+      // English row — only content words that have a cached per-word translation
+      // Skips particles/auxiliaries (wb.translation is '' for those) to avoid noise
+      if (wb.translation) {
+        translationEl.appendChild(buildWordSpan(wb.translation, i, wb, sub));
+      }
     });
+
+    // Fallbacks when cache is cold (no per-word translations yet)
     if (translitEl.children.length === 0 && hasTranslit) {
       translitEl.textContent = sub.transliteration;
+    }
+    if (translationEl.children.length === 0) {
+      translationEl.textContent = sub.translation || '';
     }
   } else {
     // No word-level breakdown — client-side split for the original row only
     if (hasTranslit) translitEl.textContent = sub.transliteration;
+    translationEl.textContent = sub.translation || '';
     clientTokenize(sub.original, sub.sourceLanguage).forEach((token, i) => {
       wordsEl.appendChild(buildWordSpan(token, i, null, sub));
     });

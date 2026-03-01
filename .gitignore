@@ -4,3 +4,24 @@ dist/
 *.env.local
 .DS_Store
 Thumbs.db
+
+
+# to do is 
+
+#ad an llm in context definition option, 
+# that if you click a special robot icon button on 
+# your saved cards it says : get in context definition ?
+# then takes 3 levels of context, 
+# video info name and type genre etc
+# the past couple subtitles and the next couple of subtitles
+# as well as user info maybe 
+# then gives you an in context definition
+
+# also add support for other languages
+
+# also fix design issues
+
+# add website and add to chrome extensions store
+
+# fix color coding
+
