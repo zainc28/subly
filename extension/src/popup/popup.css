@@ -250,7 +250,7 @@ body {
 
 /* ── Dashboard ───────────────────────────────────────────────────────────── */
 
-.dashboard-view { display: flex; flex-direction: column; gap: 14px; }
+.dashboard-view { display: flex; flex-direction: column; gap: 14px; padding-bottom: 4px; }
 
 .dash-header {
   display: flex;
@@ -367,39 +367,62 @@ body {
 
 .usage-tier { font-size: 11px; color: #475569; }
 
-/* ── Action row ──────────────────────────────────────────────────────────── */
+/* ── Recent saved words ───────────────────────────────────────────────────── */
 
-.action-row { display: flex; flex-direction: column; gap: 8px; }
-
-/* ── Dictionary ──────────────────────────────────────────────────────────── */
-
-.dictionary-view { display: flex; flex-direction: column; gap: 12px; padding-bottom: 0; }
-
-.dict-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding-top: 4px;
-}
-
-.dict-title { font-size: 16px; font-weight: 700; flex: 1; }
-
-.dict-count { font-size: 12px; color: #64748b; }
-
-.dict-search { padding: 0; }
-
-.word-list {
+.recent-words {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  max-height: 380px;
-  overflow-y: auto;
-  padding-right: 4px;
 }
 
-.word-list::-webkit-scrollbar { width: 4px; }
-.word-list::-webkit-scrollbar-track { background: transparent; }
-.word-list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+.recent-words__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.recent-words__title {
+  font-size: 11px;
+  font-weight: 700;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.recent-words__link {
+  background: none;
+  border: none;
+  font-size: 12px;
+  color: #7c3aed;
+  cursor: pointer;
+  padding: 0;
+  font-weight: 600;
+  transition: color 0.15s;
+}
+
+.recent-words__link:hover { color: #a78bfa; }
+
+.recent-words__list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.recent-words__list::-webkit-scrollbar { width: 3px; }
+.recent-words__list::-webkit-scrollbar-track { background: transparent; }
+.recent-words__list::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
+
+.recent-words__empty {
+  text-align: center;
+  color: #475569;
+  font-size: 12px;
+  padding: 20px 10px;
+  line-height: 1.6;
+  white-space: pre-line;
+}
 
 .word-card {
   background: rgba(255,255,255,0.04);
@@ -412,17 +435,49 @@ body {
 
 .word-card:hover { border-color: rgba(124, 58, 237, 0.3); }
 
-.word-card__main { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+/* All three forms in one row: [Japanese] · [romaji] · [English] */
+.word-card__header {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 5px;
+  padding-right: 20px; /* clear the trash icon */
+}
 
 .word-card__word {
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
   color: #a78bfa;
 }
 
-.word-card__romaji { font-size: 12px; color: #64748b; }
+.word-card__romaji {
+  font-size: 12px;
+  color: #60a5fa;
+  font-style: italic;
+}
 
-.word-card__translation { font-size: 13px; color: #94a3b8; margin-bottom: 4px; }
+/* Separator dots between the three values */
+.word-card__romaji::before { content: '·'; margin-right: 6px; color: #334155; font-style: normal; }
+
+.word-card__en {
+  font-size: 12px;
+  color: #94a3b8;
+  font-weight: 500;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.word-card__en::before { content: '·'; margin-right: 6px; color: #334155; }
+
+.word-card__definition {
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+  margin-bottom: 4px;
+}
 
 .word-card__context {
   font-size: 11px;
@@ -437,18 +492,18 @@ body {
   position: absolute;
   top: 8px;
   right: 8px;
-  width: 22px;
-  height: 22px;
+  width: 24px;
+  height: 24px;
   border-radius: 6px;
   background: transparent;
   border: none;
   color: #475569;
-  font-size: 16px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
   transition: background 0.2s, color 0.2s;
+  padding: 0;
 }
 
 .word-card__delete:hover { background: rgba(239,68,68,0.15); color: #fca5a5; }

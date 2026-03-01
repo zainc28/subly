@@ -203,23 +203,31 @@ function renderSubtitle(sub: EnhancedSubtitle) {
   if (!overlay) return;
   const { translationEl, wordsEl, translitEl } = getOverlayEls();
 
+  // Translation row: full sentence as plain text — no per-word spans here
   translationEl.textContent = sub.translation || '';
   translationEl.style.opacity = '1';
 
-  translitEl.textContent =
-    sub.transliteration && sub.transliteration !== sub.original
-      ? sub.transliteration
-      : '';
-
   wordsEl.innerHTML = '';
+  translitEl.innerHTML = '';
+
   const tokens = sub.wordBreakdown.filter((wb) => wb.word.trim());
+  const hasTranslit = !!(sub.transliteration && sub.transliteration !== sub.original);
 
   if (tokens.length > 0) {
     tokens.forEach((wb, i) => {
+      // Original language row — colored, hoverable, clickable
       wordsEl.appendChild(buildWordSpan(wb.word, i, wb, sub));
+      // Romaji row — same color index as its corresponding original word
+      if (hasTranslit && wb.transliteration && wb.transliteration !== wb.word) {
+        translitEl.appendChild(buildWordSpan(wb.transliteration, i, wb, sub));
+      }
     });
+    if (translitEl.children.length === 0 && hasTranslit) {
+      translitEl.textContent = sub.transliteration;
+    }
   } else {
-    // No tokenisation from backend — use client-side split
+    // No word-level breakdown — client-side split for the original row only
+    if (hasTranslit) translitEl.textContent = sub.transliteration;
     clientTokenize(sub.original, sub.sourceLanguage).forEach((token, i) => {
       wordsEl.appendChild(buildWordSpan(token, i, null, sub));
     });
@@ -235,7 +243,7 @@ function showLoading(text: string, lang: string) {
   translitEl.textContent = '';
   wordsEl.innerHTML = '';
 
-  // Render client-side tokens immediately — they're clickable right away
+  // Render client-side tokens immediately in the original row — clickable right away
   clientTokenize(text, lang).forEach((token, i) => {
     const span = buildWordSpan(token, i, null, null);
     span.style.opacity = '0.6';
@@ -247,8 +255,9 @@ function showFallback(text: string, lang: string) {
   if (!overlay) return;
   const { translationEl, wordsEl, translitEl } = getOverlayEls();
 
-  translationEl.textContent = '';
-  translitEl.textContent = '';
+  translationEl.innerHTML = '';
+  translationEl.style.opacity = '1';
+  translitEl.innerHTML = '';
   wordsEl.innerHTML = '';
 
   clientTokenize(text, lang).forEach((token, i) => {
@@ -291,11 +300,34 @@ function hideWordTooltip() {
 
 // ── Word save ─────────────────────────────────────────────────────────────────
 
+// Fetch a per-word translation directly from MyMemory when the cache hasn't warmed yet.
+async function fetchWordTranslation(word: string, sourceLang: string): Promise<string> {
+  try {
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(word)}&langpair=${sourceLang}|en`;
+    const res = await proxyFetch(url, {});
+    if (res.ok && res.data) {
+      const data = res.data as { responseStatus: number; responseData: { translatedText: string } };
+      if (data.responseStatus === 200) {
+        const t = data.responseData?.translatedText?.trim();
+        // MyMemory echoes the input when it can't translate — discard that
+        if (t && t.toLowerCase() !== word.toLowerCase() && t.length < 60) return t;
+      }
+    }
+  } catch { /* ignore — word saves with empty translation rather than wrong one */ }
+  return '';
+}
+
 async function handleWordClick(wb: WordBreakdown, sub: EnhancedSubtitle) {
   const token = await getToken();
   if (!token) {
     showToast('Sign in to save words', 'info');
     return;
+  }
+
+  // Use cached per-word translation; if absent, fetch it now (single MyMemory call)
+  let wordTranslation = wb.translation;
+  if (!wordTranslation && wb.word.trim()) {
+    wordTranslation = await fetchWordTranslation(wb.word, sub.sourceLanguage);
   }
 
   try {
@@ -305,7 +337,7 @@ async function handleWordClick(wb: WordBreakdown, sub: EnhancedSubtitle) {
       body: JSON.stringify({
         word: wb.word,
         transliteration: wb.transliteration || wb.word,
-        translation: wb.translation || sub.translation,
+        translation: wordTranslation,           // correct per-word translation, not the sentence
         context_sentence: sub.original,
         source_language: sub.sourceLanguage,
         video_url: window.location.href,

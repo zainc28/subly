@@ -6,7 +6,7 @@ import type { User } from '@supabase/supabase-js';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type View = 'auth' | 'dashboard' | 'dictionary';
+type View = 'auth' | 'dashboard';
 type AuthMode = 'signin' | 'signup';
 
 // ── Stars background ─────────────────────────────────────────────────────────
@@ -134,38 +134,78 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
   );
 }
 
+// ── Dictionary definition lookup (Free Dictionary API, no key needed) ────────
+
+async function fetchDefinition(englishWord: string): Promise<string> {
+  // Only attempt single/double-word purely alphabetic translations
+  const words = englishWord.trim().split(/\s+/);
+  if (words.length > 3 || !/^[a-zA-Z\s''-]+$/.test(englishWord.trim())) return '';
+  const lookup = words[0].toLowerCase().replace(/[^a-z]/g, '');
+  if (!lookup) return '';
+  try {
+    const res = await fetch(`https://api.dictionaryapi.dev/api/v2/entries/en/${encodeURIComponent(lookup)}`);
+    if (!res.ok) return '';
+    const data = await res.json() as Array<{ meanings: Array<{ definitions: Array<{ definition: string }> }> }>;
+    return data[0]?.meanings?.[0]?.definitions?.[0]?.definition ?? '';
+  } catch {
+    return '';
+  }
+}
+
+// ── Trash icon ────────────────────────────────────────────────────────────────
+
+function TrashIcon() {
+  return (
+    <svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13" aria-hidden="true">
+      <path d="M6.5 1h3a.5.5 0 0 1 .5.5v1H6v-1a.5.5 0 0 1 .5-.5ZM11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3A1.5 1.5 0 0 0 5 1.5v1H1.5a.5.5 0 0 0 0 1h.538l.853 10.66A2 2 0 0 0 4.885 16h6.23a2 2 0 0 0 1.994-1.84l.853-10.66H14.5a.5.5 0 0 0 0-1H11Zm1.958 1-.846 10.58a1 1 0 0 1-.997.92h-6.23a1 1 0 0 1-.997-.92L3.042 3.5h9.916Zm-7.487 1a.5.5 0 0 1 .528.47l.5 8.5a.5.5 0 0 1-.998.06L5 5.03a.5.5 0 0 1 .47-.53Zm5.058 0a.5.5 0 0 1 .47.53l-.5 8.5a.5.5 0 0 1-.998-.06l.5-8.5a.5.5 0 0 1 .528-.47ZM8 4.5a.5.5 0 0 1 .5.5v8.5a.5.5 0 0 1-1 0V5a.5.5 0 0 1 .5-.5Z" />
+    </svg>
+  );
+}
+
 // ── Dashboard view ────────────────────────────────────────────────────────────
 
 function DashboardView({
   user,
   onSignOut,
-  onOpenDictionary,
 }: {
   user: User;
   onSignOut: () => void;
-  onOpenDictionary: () => void;
 }) {
   const [enabled, setEnabled] = useState(false);
   const [subscription, setSubscription] = useState<UserSubscription | null>(null);
   const [isYouTube, setIsYouTube] = useState(false);
+  const [words, setWords] = useState<DictionaryEntry[]>([]);
+  const [wordsLoading, setWordsLoading] = useState(true);
+  const [deleteError, setDeleteError] = useState('');
+  const [definitions, setDefinitions] = useState<Record<string, string>>({});
 
   useEffect(() => {
-    // Read toggle state
     chrome.storage.local.get('subly_enabled', (r) => setEnabled(!!r.subly_enabled));
 
-    // Check if current tab is YouTube
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const url = tabs[0]?.url ?? '';
       setIsYouTube(url.includes('youtube.com'));
     });
 
-    // Load subscription
     supabase.auth.getSession().then(({ data: { session } }) => {
-      if (session?.access_token) {
-        getSubscription(session.access_token)
-          .then(setSubscription)
-          .catch(() => null);
-      }
+      if (!session?.access_token) return;
+      getSubscription(session.access_token)
+        .then(setSubscription)
+        .catch(() => null);
+      getDictionary(session.access_token)
+        .then((entries) => {
+          const recent = entries.slice(0, 10);
+          setWords(recent);
+          // Fetch definitions for each word's English translation in parallel
+          recent.forEach((entry) => {
+            if (!entry.translation) return;
+            fetchDefinition(entry.translation).then((def) => {
+              if (def) setDefinitions((prev) => ({ ...prev, [entry.id]: def }));
+            });
+          });
+        })
+        .catch(() => null)
+        .finally(() => setWordsLoading(false));
     });
   }, []);
 
@@ -173,8 +213,6 @@ function DashboardView({
     const next = !enabled;
     setEnabled(next);
     await chrome.storage.local.set({ subly_enabled: next });
-
-    // Notify content script on active YouTube tab
     chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
       const tabId = tabs[0]?.id;
       if (tabId) {
@@ -183,8 +221,24 @@ function DashboardView({
     });
   }
 
+  async function handleDelete(id: string) {
+    setDeleteError('');
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session?.access_token) return;
+      await deleteWord(session.access_token, id);
+      setWords((prev) => prev.filter((w) => w.id !== id));
+    } catch {
+      setDeleteError('Failed to remove word');
+    }
+  }
+
   function openYouTube() {
     chrome.tabs.create({ url: 'https://www.youtube.com' });
+  }
+
+  function openFullDictionary() {
+    chrome.tabs.create({ url: 'https://subly.app/dictionary' });
   }
 
   const usedPct =
@@ -247,117 +301,59 @@ function DashboardView({
         </div>
       )}
 
-      {/* Actions */}
-      <div className="action-row">
-        <button className="btn btn--secondary btn--full" onClick={onOpenDictionary}>
-          📚 My Dictionary
-        </button>
-        {!isYouTube && (
-          <button className="btn btn--primary btn--full" onClick={openYouTube}>
-            ▶ Open YouTube
+      {/* Recent saved words */}
+      <div className="recent-words">
+        <div className="recent-words__header">
+          <span className="recent-words__title">Recent Saves</span>
+          <button className="recent-words__link" onClick={openFullDictionary}>
+            View all →
           </button>
+        </div>
+
+        {deleteError && <div className="alert alert--error" style={{ fontSize: 12, padding: '6px 10px' }}>{deleteError}</div>}
+
+        {wordsLoading ? (
+          <div className="recent-words__empty">Loading…</div>
+        ) : words.length === 0 ? (
+          <div className="recent-words__empty">
+            No words saved yet.{'\n'}Click any word while watching to save it!
+          </div>
+        ) : (
+          <div className="recent-words__list">
+            {words.map((entry) => (
+              <div key={entry.id} className="word-card">
+                <div className="word-card__header">
+                  <span className="word-card__word">{entry.word}</span>
+                  {entry.transliteration && entry.transliteration !== entry.word && (
+                    <span className="word-card__romaji">{entry.transliteration}</span>
+                  )}
+                  {entry.translation && (
+                    <span className="word-card__en">{entry.translation}</span>
+                  )}
+                </div>
+                {definitions[entry.id] && (
+                  <div className="word-card__definition">{definitions[entry.id]}</div>
+                )}
+                {entry.context_sentence && (
+                  <div className="word-card__context">{entry.context_sentence}</div>
+                )}
+                <button
+                  className="word-card__delete"
+                  onClick={() => handleDelete(entry.id)}
+                  title="Remove word"
+                >
+                  <TrashIcon />
+                </button>
+              </div>
+            ))}
+          </div>
         )}
       </div>
-    </div>
-  );
-}
 
-// ── Dictionary view ───────────────────────────────────────────────────────────
-
-function DictionaryView({ onBack }: { onBack: () => void }) {
-  const [words, setWords] = useState<DictionaryEntry[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState('');
-  const [error, setError] = useState('');
-
-  useEffect(() => {
-    loadWords();
-  }, []);
-
-  async function loadWords() {
-    setLoading(true);
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) return;
-      const entries = await getDictionary(session.access_token);
-      setWords(entries);
-    } catch {
-      setError('Failed to load dictionary');
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function handleDelete(id: string) {
-    try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) return;
-      await deleteWord(session.access_token, id);
-      setWords((prev) => prev.filter((w) => w.id !== id));
-    } catch {
-      setError('Failed to delete word');
-    }
-  }
-
-  const filtered = filter
-    ? words.filter(
-        (w) =>
-          w.word.toLowerCase().includes(filter.toLowerCase()) ||
-          w.translation.toLowerCase().includes(filter.toLowerCase()),
-      )
-    : words;
-
-  return (
-    <div className="view dictionary-view">
-      <header className="dict-header">
-        <button className="btn btn--ghost btn--sm" onClick={onBack}>
-          ← Back
+      {!isYouTube && (
+        <button className="btn btn--primary btn--full" onClick={openYouTube}>
+          ▶ Open YouTube
         </button>
-        <h2 className="dict-title">My Dictionary</h2>
-        <span className="dict-count">{words.length} words</span>
-      </header>
-
-      <div className="dict-search">
-        <input
-          className="form-input"
-          placeholder="Search words…"
-          value={filter}
-          onChange={(e) => setFilter(e.target.value)}
-        />
-      </div>
-
-      {error && <div className="alert alert--error">{error}</div>}
-
-      {loading ? (
-        <div className="loading-state">Loading…</div>
-      ) : filtered.length === 0 ? (
-        <div className="empty-state">
-          {filter ? 'No matches found' : 'No words saved yet.\nClick any word while watching to save it!'}
-        </div>
-      ) : (
-        <div className="word-list">
-          {filtered.map((entry) => (
-            <div key={entry.id} className="word-card">
-              <div className="word-card__main">
-                <span className="word-card__word">{entry.word}</span>
-                {entry.transliteration && entry.transliteration !== entry.word && (
-                  <span className="word-card__romaji">{entry.transliteration}</span>
-                )}
-              </div>
-              <div className="word-card__translation">{entry.translation}</div>
-              {entry.context_sentence && (
-                <div className="word-card__context">{entry.context_sentence}</div>
-              )}
-              <button
-                className="word-card__delete"
-                onClick={() => handleDelete(entry.id)}
-                title="Remove word"
-              >
-                ×
-              </button>
-            </div>
-          ))}
-        </div>
       )}
     </div>
   );
@@ -371,7 +367,6 @@ export default function App() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // Check existing session
     supabase.auth.getSession().then(({ data: { session } }) => {
       if (session?.user) {
         setUser(session.user);
@@ -380,7 +375,6 @@ export default function App() {
       setLoading(false);
     });
 
-    // Listen for auth changes
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       if (session?.user) {
         setUser(session.user);
@@ -403,7 +397,6 @@ export default function App() {
     await supabase.auth.signOut();
     setUser(null);
     setView('auth');
-    // Also disable Subly
     chrome.storage.local.set({ subly_enabled: false });
   }, []);
 
@@ -424,10 +417,8 @@ export default function App() {
         <DashboardView
           user={user}
           onSignOut={handleSignOut}
-          onOpenDictionary={() => setView('dictionary')}
         />
       )}
-      {view === 'dictionary' && <DictionaryView onBack={() => setView('dashboard')} />}
     </div>
   );
 }

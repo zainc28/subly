@@ -116,39 +116,52 @@ async function getJapaneseWordBreakdown(text: string): Promise<WordBreakdown[]> 
   await initKuroshiro();
 
   const tokens: any[] = await kuromojiAnalyzer.parse(text);
+
+  // Phase 1 — Romanize every token in parallel (Kuroshiro is local, very fast)
+  const romajiForms = await Promise.all(
+    tokens.map(async (token: any) => {
+      try {
+        return (await romanizeJapanese(token.surface_form, 'normal')).trim();
+      } catch {
+        return token.surface_form as string;
+      }
+    }),
+  );
+
+  // Phase 2 — Build result using only cached per-word translations (instant, no network wait)
   const result: WordBreakdown[] = [];
+  const toFetch: string[] = [];
   let charIndex = 0;
 
-  const translationPromises = tokens.map(async (token: any) => {
+  for (let i = 0; i < tokens.length; i++) {
+    const token = tokens[i];
     const word: string = token.surface_form;
     const startIndex = charIndex;
     const endIndex = charIndex + word.length;
     charIndex = endIndex;
 
-    // Romanise this token
-    let transliteration = '';
-    try {
-      transliteration = await romanizeJapanese(word, 'normal');
-      transliteration = transliteration.trim();
-    } catch {
-      transliteration = word;
-    }
+    const shouldTranslate =
+      !SKIP_POS.some((pos) => token.pos?.startsWith(pos)) && word.trim().length > 0;
 
-    // Translate content words only
     let translation = '';
-    const shouldTranslate = !SKIP_POS.some((pos) => token.pos?.startsWith(pos));
-    if (shouldTranslate && word.trim().length > 0) {
-      translation = await translateText(word, 'ja', 'en');
-      // If translation equals original (untranslatable) just omit it
-      if (translation === word) translation = '';
+    if (shouldTranslate) {
+      const cacheKey = `ja|en|${word}`;
+      if (translationCache.has(cacheKey)) {
+        translation = translationCache.get(cacheKey)!;
+        if (translation === word) translation = '';
+      } else {
+        toFetch.push(word); // not cached yet — queue for background fetch
+      }
     }
 
-    return { word, transliteration, translation, startIndex, endIndex };
-  });
+    result.push({ word, transliteration: romajiForms[i], translation, startIndex, endIndex });
+  }
 
-  // Translate all words concurrently
-  const breakdown = await Promise.all(translationPromises);
-  result.push(...breakdown);
+  // Phase 3 — Background-fetch uncached words to warm the cache for next time (fire-and-forget)
+  if (toFetch.length > 0) {
+    Promise.all(toFetch.map((w) => translateText(w, 'ja', 'en'))).catch(() => {});
+  }
+
   return result;
 }
 
@@ -164,29 +177,35 @@ async function getGenericWordBreakdown(
   sourceLang: string,
   targetLang: string,
 ): Promise<WordBreakdown[]> {
-  // For CJK-character languages, split into individual characters (each is a word unit)
   const tokens: string[] = CJK_CHAR_LANGS.has(sourceLang)
-    ? Array.from(text).filter((c) => c.trim())      // every non-whitespace char
-    : text.split(/\s+/).filter((w) => w.trim());     // space-delimited words
+    ? Array.from(text).filter((c) => c.trim())
+    : text.split(/\s+/).filter((w) => w.trim());
 
   const result: WordBreakdown[] = [];
+  const toFetch: string[] = [];
   let charIndex = 0;
 
-  // Find the start index of each token in the original text
   for (const token of tokens) {
     const startIndex = text.indexOf(token, charIndex);
     const endIndex = startIndex + token.length;
     charIndex = endIndex;
 
-    // Translate (skip common function-word single chars to save API calls)
-    const translation = await translateText(token, sourceLang, targetLang);
-    result.push({
-      word: token,
-      transliteration: token, // no romanisation for generic paths
-      translation: translation !== token ? translation : '',
-      startIndex,
-      endIndex,
-    });
+    // Use cached translation if available; otherwise queue background fetch
+    const cacheKey = `${sourceLang}|${targetLang}|${token}`;
+    let translation = '';
+    if (translationCache.has(cacheKey)) {
+      const cached = translationCache.get(cacheKey)!;
+      translation = cached !== token ? cached : '';
+    } else {
+      toFetch.push(token);
+    }
+
+    result.push({ word: token, transliteration: token, translation, startIndex, endIndex });
+  }
+
+  // Warm the cache in background — available on subsequent subtitle lines
+  if (toFetch.length > 0) {
+    Promise.all(toFetch.map((w) => translateText(w, sourceLang, targetLang))).catch(() => {});
   }
 
   return result;
