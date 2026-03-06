@@ -39,7 +39,12 @@ export async function initKuroshiro(): Promise<void> {
     kuroshiroInstance = new Kuroshiro();
     await kuroshiroInstance.init(kuromojiAnalyzer);
     console.log('[Subly] Kuroshiro ready.');
-  })();
+  })().catch((err) => {
+    // Reset so the next call can retry rather than permanently failing
+    initPromise = null;
+    kuroshiroInstance = null;
+    throw err;
+  });
 
   return initPromise;
 }
@@ -60,7 +65,9 @@ export function detectLanguage(text: string): string {
   return 'auto';
 }
 
-// ── Translation (MyMemory) ────────────────────────────────────────────────────
+// ── Translation ───────────────────────────────────────────────────────────────
+// Primary: unofficial Google Translate endpoint (fast, no key, high limits)
+// Fallback: MyMemory (free, needs no key)
 
 function decodeHtmlEntities(text: string): string {
   return text
@@ -72,6 +79,37 @@ function decodeHtmlEntities(text: string): string {
     .replace(/&#x2F;/g, '/');
 }
 
+async function translateWithGoogle(text: string, sourceLang: string, targetLang: string): Promise<string | null> {
+  try {
+    const url = `https://translate.googleapis.com/translate_a/single?client=gtx&sl=${sourceLang}&tl=${targetLang}&dt=t&q=${encodeURIComponent(text)}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    if (!res.ok) return null;
+    // Response: [[["translated","source",...], ...], null, "ja", ...]
+    const data = await res.json() as unknown[][];
+    const segments = data[0] as Array<[string, ...unknown[]]>;
+    if (!Array.isArray(segments)) return null;
+    const translated = segments.map((s) => s[0] ?? '').join('').trim();
+    return translated && translated !== text ? translated : null;
+  } catch {
+    return null;
+  }
+}
+
+async function translateWithMyMemory(text: string, sourceLang: string, targetLang: string): Promise<string | null> {
+  try {
+    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`;
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
+    const data = await res.json() as { responseStatus: number; responseData: { translatedText: string } };
+    if (data.responseStatus === 200) {
+      const translated = decodeHtmlEntities(data.responseData.translatedText);
+      return translated && translated !== text ? translated : null;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export async function translateText(
   text: string,
   sourceLang: string,
@@ -80,24 +118,13 @@ export async function translateText(
   const cacheKey = `${sourceLang}|${targetLang}|${text}`;
   if (translationCache.has(cacheKey)) return translationCache.get(cacheKey)!;
 
-  try {
-    const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
-    const data = await res.json() as any;
+  const result =
+    (await translateWithGoogle(text, sourceLang, targetLang)) ??
+    (await translateWithMyMemory(text, sourceLang, targetLang)) ??
+    text;
 
-    if (data.responseStatus === 200) {
-      const translated = decodeHtmlEntities(data.responseData.translatedText as string);
-      // MyMemory sometimes echoes the query when it can't translate
-      if (translated && translated !== text) {
-        translationCache.set(cacheKey, translated);
-        return translated;
-      }
-    }
-  } catch {
-    // network / timeout — fall through to original
-  }
-
-  return text;
+  if (result !== text) translationCache.set(cacheKey, result);
+  return result;
 }
 
 // ── Japanese romanisation ────────────────────────────────────────────────────
@@ -221,24 +248,22 @@ export async function enhanceSubtitle(
   const cacheKey = `${sourceLang}|${targetLang}|${text}`;
   if (subtitleCache.has(cacheKey)) return subtitleCache.get(cacheKey)!;
 
-  // Full-sentence translation (always)
-  const translationPromise = translateText(text, sourceLang, targetLang);
+  // Romanisation (Kuroshiro — local, fast)
+  const transliterationPromise: Promise<string> = sourceLang === 'ja'
+    ? romanizeJapanese(text).catch(() => text)
+    : Promise.resolve(text);
 
-  // Romanisation
-  let transliterationPromise: Promise<string>;
-  if (sourceLang === 'ja') {
-    transliterationPromise = romanizeJapanese(text).catch(() => text);
-  } else {
-    transliterationPromise = Promise.resolve(text);
-  }
+  // Word breakdown (Kuromoji — local, fast)
+  const wordBreakdownPromise: Promise<WordBreakdown[]> = sourceLang === 'ja'
+    ? getJapaneseWordBreakdown(text).catch(() => [])
+    : getGenericWordBreakdown(text, sourceLang, targetLang).catch(() => []);
 
-  // Word breakdown
-  let wordBreakdownPromise: Promise<WordBreakdown[]>;
-  if (sourceLang === 'ja') {
-    wordBreakdownPromise = getJapaneseWordBreakdown(text).catch(() => []);
-  } else {
-    wordBreakdownPromise = getGenericWordBreakdown(text, sourceLang, targetLang).catch(() => []);
-  }
+  // Full-sentence translation (network — can be slower)
+  // Race against a 4s deadline so transliteration+breakdown are never held hostage
+  const translationPromise = Promise.race([
+    translateText(text, sourceLang, targetLang),
+    new Promise<string>((resolve) => setTimeout(() => resolve(text), 4000)),
+  ]);
 
   const [translation, transliteration, wordBreakdown] = await Promise.all([
     translationPromise,
