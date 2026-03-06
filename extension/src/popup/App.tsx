@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { getDictionary, deleteWord, getSubscription } from '../lib/api';
+import { getDictionary, deleteWord, getSubscription, API_URL } from '../lib/api';
 import type { DictionaryEntry, UserSubscription } from '../lib/api';
 import type { User } from '@supabase/supabase-js';
 
@@ -221,6 +221,8 @@ function DashboardView({
   const [wordsLoading, setWordsLoading] = useState(true);
   const [deleteError, setDeleteError] = useState('');
   const [definitions, setDefinitions] = useState<Record<string, string>>({});
+  const [aiDefs, setAiDefs] = useState<Record<string, string>>({});
+  const [aiLoading, setAiLoading] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     chrome.storage.local.get('subly_enabled', (r) => setEnabled(!!r.subly_enabled));
@@ -261,6 +263,39 @@ function DashboardView({
         chrome.tabs.sendMessage(tabId, { type: 'TOGGLE', enabled: next }).catch(() => {});
       }
     });
+  }
+
+  async function fetchAIDef(entry: DictionaryEntry) {
+    setAiLoading((prev) => ({ ...prev, [entry.id]: true }));
+    try {
+      const { data: { session } } = await supabase.auth.getSession();
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (session?.access_token) headers['Authorization'] = `Bearer ${session.access_token}`;
+      const res = await fetch(`${API_URL}/api/ai/define`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          word: entry.word,
+          transliteration: entry.transliteration,
+          translation: entry.translation,
+          sourceLanguage: entry.source_language,
+          recentSubtitles: entry.context_sentence ? [entry.context_sentence] : [],
+          upcomingSubtitles: [],
+          videoTitle: 'Saved word',
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json() as { definition: string };
+        setAiDefs((prev) => ({ ...prev, [entry.id]: data.definition }));
+      } else if (res.status === 503) {
+        setAiDefs((prev) => ({ ...prev, [entry.id]: 'AI not configured on this server.' }));
+      } else {
+        setAiDefs((prev) => ({ ...prev, [entry.id]: 'AI unavailable.' }));
+      }
+    } catch {
+      setAiDefs((prev) => ({ ...prev, [entry.id]: 'AI unavailable.' }));
+    }
+    setAiLoading((prev) => ({ ...prev, [entry.id]: false }));
   }
 
   async function handleDelete(id: string) {
@@ -378,9 +413,20 @@ function DashboardView({
                   {entry.translation && (
                     <span className="word-card__en">{entry.translation}</span>
                   )}
+                  <button
+                    className="word-card__ai-btn"
+                    onClick={() => fetchAIDef(entry)}
+                    disabled={aiLoading[entry.id]}
+                    title="AI in-context definition"
+                  >
+                    {aiLoading[entry.id] ? '⟳' : '💡'}
+                  </button>
                 </div>
                 {definitions[entry.id] && (
                   <div className="word-card__definition">{definitions[entry.id]}</div>
+                )}
+                {aiDefs[entry.id] && (
+                  <div className="word-card__ai-def">{aiDefs[entry.id]}</div>
                 )}
                 <button
                   className="word-card__delete"

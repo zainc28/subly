@@ -624,6 +624,31 @@ body {
   margin-bottom: 2px;
 }
 
+.word-card__ai-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 13px;
+  padding: 0 2px;
+  opacity: 0.6;
+  transition: opacity 0.15s;
+  margin-left: auto;
+  line-height: 1;
+}
+
+.word-card__ai-btn:hover:not(:disabled) { opacity: 1; }
+.word-card__ai-btn:disabled { cursor: default; }
+
+.word-card__ai-def {
+  font-size: 11px;
+  color: #c4b5fd;
+  line-height: 1.55;
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(124, 58, 237, 0.2);
+  padding-right: 28px; /* avoid overlap with delete button */
+}
+
 .word-card__delete {
   position: absolute;
   top: 8px;

@@ -8,6 +8,7 @@ import { initKuroshiro } from './services/translation';
 import subtitlesRouter from './routes/subtitles';
 import dictionaryRouter from './routes/dictionary';
 import userRouter from './routes/user';
+import aiRouter from './routes/ai';
 
 const app = express();
 const PORT = process.env.PORT ?? 3000;
@@ -53,6 +54,7 @@ app.get('/health', (_req, res) => {
 app.use('/api/subtitles', subtitlesRouter);
 app.use('/api/dictionary', dictionaryRouter);
 app.use('/api/user', userRouter);
+app.use('/api/ai', aiRouter);
 
 // ── Start ──────────────────────────────────────────────────────────────────────
 

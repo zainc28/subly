@@ -66,6 +66,23 @@ function clientTokenize(text: string, lang: string): string[] {
   return text.split(/\s+/).filter((w) => w !== '');
 }
 
+// ── Subtitle history (for AI context) ─────────────────────────────────────────
+
+const subtitleHistory: string[] = [];
+const MAX_HISTORY = 6;
+
+// ── Caption preloading types ──────────────────────────────────────────────────
+
+interface CaptionEntry {
+  tStartMs: number;
+  dDurationMs: number;
+  text: string;
+}
+
+let captionEntries: CaptionEntry[] = [];
+let preloadTimer: number | null = null;
+let preloadingInitialized = false;
+
 // ── State ─────────────────────────────────────────────────────────────────────
 
 let enabled = false;
@@ -73,6 +90,7 @@ let overlay: HTMLDivElement | null = null;
 let captionObserver: MutationObserver | null = null;
 let lastText = '';
 let processingLock = false;
+let pendingText: string | null = null;
 let currentSubtitle: EnhancedSubtitle | null = null;
 
 const subtitleCache = new Map<string, EnhancedSubtitle>();
@@ -83,6 +101,14 @@ let dragStartX = 0;
 let dragStartY = 0;
 let overlayX = 0;
 let overlayY = 0;
+
+// Player position tracking
+let playerObserver: ResizeObserver | null = null;
+
+// Transcript sidebar state
+let transcriptEl: HTMLDivElement | null = null;
+let transcriptBodyEl: HTMLDivElement | null = null;
+let autoScrollTranscript = true;
 
 // ── Auth token ────────────────────────────────────────────────────────────────
 
@@ -97,6 +123,147 @@ async function getToken(): Promise<string | null> {
       resolve(null);
     }
   });
+}
+
+// ── Player-relative overlay positioning ──────────────────────────────────────
+// Keeps the overlay just above the YouTube controls bar regardless of scroll,
+// theater mode, or window resize.
+
+function updateOverlayPosition() {
+  if (!overlay) return;
+  const player = document.querySelector<HTMLElement>('#movie_player');
+  if (!player) return;
+  const rect = player.getBoundingClientRect();
+  // 50px gap from the player's bottom edge (sits above the controls bar)
+  const fromBottom = window.innerHeight - rect.bottom + 50;
+  overlay.style.bottom = `${Math.max(fromBottom, 8)}px`;
+}
+
+function startPositionTracking() {
+  updateOverlayPosition();
+  const player = document.querySelector<HTMLElement>('#movie_player');
+  if (player && !playerObserver) {
+    playerObserver = new ResizeObserver(updateOverlayPosition);
+    playerObserver.observe(player);
+    playerObserver.observe(document.documentElement);
+  }
+  window.addEventListener('scroll', updateOverlayPosition, { passive: true });
+  window.addEventListener('resize', updateOverlayPosition, { passive: true });
+}
+
+function stopPositionTracking() {
+  playerObserver?.disconnect();
+  playerObserver = null;
+  window.removeEventListener('scroll', updateOverlayPosition);
+  window.removeEventListener('resize', updateOverlayPosition);
+}
+
+// ── Transcript sidebar ────────────────────────────────────────────────────────
+
+function buildTranscriptWordSpan(word: string, colorIndex: number, wb: WordBreakdown | null, sub: EnhancedSubtitle): HTMLElement {
+  const span = document.createElement('span');
+  span.className = 'subly-word';
+  span.textContent = word;
+  span.style.color = WORD_COLORS[colorIndex % WORD_COLORS.length];
+  span.addEventListener('click', () => {
+    if (!wb) {
+      showToast('Click a Japanese or romaji word to save', 'info');
+      return;
+    }
+    handleWordClick(wb, sub);
+  });
+  return span;
+}
+
+function createTranscript(): HTMLDivElement {
+  const div = document.createElement('div');
+  div.id = 'subly-transcript';
+
+  const header = document.createElement('div');
+  header.className = 'subly-transcript-header';
+
+  const title = document.createElement('span');
+  title.className = 'subly-transcript-title';
+  title.textContent = 'Transcript';
+
+  const clearBtn = document.createElement('button');
+  clearBtn.className = 'subly-transcript-clear';
+  clearBtn.textContent = 'Clear';
+  clearBtn.addEventListener('click', () => {
+    if (transcriptBodyEl) transcriptBodyEl.innerHTML = '';
+  });
+
+  header.appendChild(title);
+  header.appendChild(clearBtn);
+  div.appendChild(header);
+
+  const body = document.createElement('div');
+  body.className = 'subly-transcript-body';
+
+  body.addEventListener('scroll', () => {
+    const { scrollTop, scrollHeight, clientHeight } = body;
+    autoScrollTranscript = scrollTop + clientHeight >= scrollHeight - 24;
+  });
+
+  div.appendChild(body);
+  transcriptBodyEl = body;
+
+  document.body.appendChild(div);
+  return div;
+}
+
+function appendTranscriptEntry(sub: EnhancedSubtitle) {
+  if (!transcriptBodyEl) return;
+
+  // Deduplicate: same subtitle re-rendered (silence reset, cache hit after API, etc.)
+  const last = transcriptBodyEl.lastElementChild as HTMLElement | null;
+  if (last?.dataset.text === sub.original) return;
+
+  const entry = document.createElement('div');
+  entry.className = 'subly-transcript-entry';
+  entry.dataset.text = sub.original;
+
+  // Japanese words row (color-coded, clickable to save)
+  const wordsRow = document.createElement('div');
+  wordsRow.className = 'subly-transcript-entry-words';
+  const tokens = sub.wordBreakdown.filter((wb) => wb.word.trim());
+  if (tokens.length > 0) {
+    tokens.forEach((wb, i) => wordsRow.appendChild(buildTranscriptWordSpan(wb.word, i, wb, sub)));
+  } else {
+    clientTokenize(sub.original, sub.sourceLanguage).forEach((tok, i) =>
+      wordsRow.appendChild(buildTranscriptWordSpan(tok, i, null, sub)),
+    );
+  }
+  entry.appendChild(wordsRow);
+
+  // Romaji row (color-coded, clickable to save the underlying Japanese word)
+  const hasTranslit = !!(sub.transliteration && sub.transliteration !== sub.original);
+  if (hasTranslit && tokens.length > 0) {
+    const translitRow = document.createElement('div');
+    translitRow.className = 'subly-transcript-entry-translit';
+    let added = false;
+    tokens.forEach((wb, i) => {
+      if (wb.transliteration && wb.transliteration !== wb.word) {
+        translitRow.appendChild(buildTranscriptWordSpan(wb.transliteration, i, wb, sub));
+        added = true;
+      }
+    });
+    if (added) entry.appendChild(translitRow);
+  }
+
+  // English translation — plain sentence text
+  if (sub.translation) {
+    const transRow = document.createElement('div');
+    transRow.className = 'subly-transcript-entry-translation';
+    transRow.textContent = sub.translation;
+    entry.appendChild(transRow);
+  }
+
+  transcriptBodyEl.appendChild(entry);
+
+  if (autoScrollTranscript) {
+    transcriptBodyEl.scrollTop = transcriptBodyEl.scrollHeight;
+  }
 }
 
 // ── Toast ─────────────────────────────────────────────────────────────────────
@@ -129,6 +296,10 @@ function createOverlay(): HTMLDivElement {
     <div class="subly-transliteration" id="subly-transliteration"></div>
     <div class="subly-tooltip" id="subly-tooltip"></div>
   `;
+
+  // Hide tooltip when mouse leaves it
+  const tooltip = div.querySelector('#subly-tooltip') as HTMLElement;
+  tooltip.addEventListener('mouseleave', hideWordTooltip);
 
   div.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('.subly-word')) return;
@@ -176,7 +347,12 @@ function buildWordSpan(
   };
 
   span.addEventListener('mouseenter', (e) => showWordTooltip(e, tooltipWb));
-  span.addEventListener('mouseleave', hideWordTooltip);
+  span.addEventListener('mouseleave', (e) => {
+    // Don't hide if the mouse moved into the tooltip
+    const tip = overlay?.querySelector('#subly-tooltip');
+    if (tip && tip.contains((e as MouseEvent).relatedTarget as Element | null)) return;
+    hideWordTooltip();
+  });
   span.addEventListener('click', () => {
     const activeSub = sub ?? currentSubtitle;
     if (!activeSub) {
@@ -203,46 +379,66 @@ function renderSubtitle(sub: EnhancedSubtitle) {
   if (!overlay) return;
   const { translationEl, wordsEl, translitEl } = getOverlayEls();
 
-  translationEl.innerHTML = '';
-  translationEl.style.opacity = '1';
-  wordsEl.innerHTML = '';
-  translitEl.innerHTML = '';
-
   const tokens = sub.wordBreakdown.filter((wb) => wb.word.trim());
   const hasTranslit = !!(sub.transliteration && sub.transliteration !== sub.original);
+  // Guard: MyMemory echoes the source text when it can't translate — never show that as English
+  const translation = sub.translation !== sub.original ? sub.translation : '';
 
+  // ── Japanese row — always shown, colored + clickable ──────────────────────
+  wordsEl.innerHTML = '';
   if (tokens.length > 0) {
-    tokens.forEach((wb, i) => {
-      // Original language row — colored, hoverable, clickable
-      wordsEl.appendChild(buildWordSpan(wb.word, i, wb, sub));
+    tokens.forEach((wb, i) => wordsEl.appendChild(buildWordSpan(wb.word, i, wb, sub)));
+  } else {
+    clientTokenize(sub.original, sub.sourceLanguage).forEach((tok, i) =>
+      wordsEl.appendChild(buildWordSpan(tok, i, null, sub)),
+    );
+  }
 
-      // Romaji row — same color index → color-matches the original word
-      if (hasTranslit && wb.transliteration && wb.transliteration !== wb.word) {
-        translitEl.appendChild(buildWordSpan(wb.transliteration, i, wb, sub));
-      }
-
-      // English row — only content words that have a cached per-word translation
-      // Skips particles/auxiliaries (wb.translation is '' for those) to avoid noise
-      if (wb.translation) {
-        translationEl.appendChild(buildWordSpan(wb.translation, i, wb, sub));
-      }
-    });
-
-    // Fallbacks when cache is cold (no per-word translations yet)
-    if (translitEl.children.length === 0 && hasTranslit) {
+  // ── Romaji row — shown whenever transliteration differs from original ─────
+  translitEl.innerHTML = '';
+  if (hasTranslit) {
+    if (tokens.length > 0) {
+      let added = false;
+      tokens.forEach((wb, i) => {
+        if (wb.transliteration && wb.transliteration !== wb.word) {
+          translitEl.appendChild(buildWordSpan(wb.transliteration, i, wb, sub));
+          added = true;
+        }
+      });
+      if (!added) translitEl.textContent = sub.transliteration;
+    } else {
       translitEl.textContent = sub.transliteration;
     }
-    if (translationEl.children.length === 0) {
-      translationEl.textContent = sub.translation || '';
-    }
-  } else {
-    // No word-level breakdown — client-side split for the original row only
-    if (hasTranslit) translitEl.textContent = sub.transliteration;
-    translationEl.textContent = sub.translation || '';
-    clientTokenize(sub.original, sub.sourceLanguage).forEach((token, i) => {
-      wordsEl.appendChild(buildWordSpan(token, i, null, sub));
-    });
   }
+
+  // ── English row — always color-coded ─────────────────────────────────────
+  // When per-word glosses are cached, each English word gets the same color index
+  // as its corresponding Japanese/romaji word (exact match).
+  // When glosses aren't cached yet, fall back to the sentence translation split by
+  // spaces with positional colors — still fully colored, just not word-aligned.
+  translationEl.innerHTML = '';
+  translationEl.style.opacity = '1';
+  if (translation) {
+    let glossCount = 0;
+    if (tokens.length > 0) {
+      tokens.forEach((wb, i) => {
+        const g = wb.translation;
+        if (g && g !== sub.original && g.length <= 20 && g.trim().split(/\s+/).length <= 3) {
+          translationEl.appendChild(buildWordSpan(g, i, wb, sub));
+          glossCount++;
+        }
+      });
+    }
+    // Glosses don't cover enough tokens — use sentence translation, color-coded by position
+    if (glossCount < Math.ceil(tokens.length / 2)) {
+      translationEl.innerHTML = '';
+      translation.trim().split(/\s+/).filter(Boolean).forEach((word, i) => {
+        translationEl.appendChild(buildWordSpan(word, i, null, sub));
+      });
+    }
+  }
+
+  appendTranscriptEntry(sub);
 }
 
 function showLoading(text: string, lang: string) {
@@ -282,6 +478,8 @@ function showWordTooltip(e: MouseEvent, wb: WordBreakdown) {
   if (!overlay) return;
   const tooltip = overlay.querySelector('#subly-tooltip') as HTMLElement;
 
+  tooltip.innerHTML = '';
+
   const lines: string[] = [];
   if (wb.word) lines.push(`<span class="subly-tip-original">${wb.word}</span>`);
   if (wb.transliteration && wb.transliteration !== wb.word)
@@ -291,7 +489,22 @@ function showWordTooltip(e: MouseEvent, wb: WordBreakdown) {
 
   if (!lines.length) return;
 
-  tooltip.innerHTML = lines.join('');
+  const textDiv = document.createElement('div');
+  textDiv.className = 'subly-tip-text';
+  textDiv.innerHTML = lines.join('');
+  tooltip.appendChild(textDiv);
+
+  // Lightbulb button for AI in-context definition
+  const aiBtn = document.createElement('button');
+  aiBtn.className = 'subly-ai-btn';
+  aiBtn.title = 'AI in-context definition';
+  aiBtn.textContent = '💡';
+  aiBtn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    fetchAndShowAIDef(tooltip, wb);
+  });
+  tooltip.appendChild(aiBtn);
+
   tooltip.style.display = 'flex';
 
   const target = e.currentTarget as HTMLElement;
@@ -307,6 +520,70 @@ function showWordTooltip(e: MouseEvent, wb: WordBreakdown) {
 function hideWordTooltip() {
   if (!overlay) return;
   (overlay.querySelector('#subly-tooltip') as HTMLElement).style.display = 'none';
+}
+
+// ── AI in-context definition ──────────────────────────────────────────────────
+
+async function fetchAndShowAIDef(tooltip: HTMLElement, wb: WordBreakdown) {
+  // Reuse or create the AI definition div inside the tooltip
+  let aiDiv = tooltip.querySelector('.subly-ai-def') as HTMLElement | null;
+  if (!aiDiv) {
+    aiDiv = document.createElement('div');
+    aiDiv.className = 'subly-ai-def';
+    tooltip.appendChild(aiDiv);
+  }
+
+  aiDiv.textContent = '⟳ Thinking…';
+
+  try {
+    const video = document.querySelector<HTMLVideoElement>('video');
+    const currentMs = (video?.currentTime ?? 0) * 1000;
+
+    const videoTitle =
+      document.querySelector<HTMLElement>('h1.ytd-watch-metadata yt-formatted-string')
+        ?.textContent?.trim() ??
+      document.title.replace(' - YouTube', '').trim();
+
+    // Upcoming subtitles from preloaded caption entries
+    const upcoming = captionEntries
+      .filter((e) => e.tStartMs > currentMs && e.tStartMs <= currentMs + 15000)
+      .slice(0, 3)
+      .map((e) => e.text);
+
+    const token = await getToken();
+    const res = await proxyFetch(`${API_URL}/api/ai/define`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({
+        word: wb.word,
+        transliteration: wb.transliteration,
+        translation: wb.translation,
+        sourceLanguage: currentSubtitle?.sourceLanguage ?? 'ja',
+        recentSubtitles: subtitleHistory.slice(-3),
+        upcomingSubtitles: upcoming,
+        videoTitle,
+      }),
+    });
+
+    if (res.ok) {
+      const data = res.data as { definition: string };
+      aiDiv.textContent = data.definition;
+    } else if ((res.data as Record<string, unknown>)?.error === 'AI feature not configured on this server') {
+      aiDiv.textContent = 'AI not configured (add GROQ_API_KEY to backend).';
+    } else {
+      aiDiv.textContent = 'AI unavailable.';
+    }
+  } catch {
+    aiDiv.textContent = 'AI unavailable.';
+  }
+
+  // Reposition tooltip now that it's taller
+  requestAnimationFrame(() => {
+    const overlayRect = overlay?.getBoundingClientRect();
+    if (!overlayRect) return;
+    const currentTop = parseInt(tooltip.style.top || '0', 10);
+    tooltip.style.top = `${currentTop - tooltip.offsetHeight / 2}px`;
+  });
 }
 
 // ── Word save ─────────────────────────────────────────────────────────────────
@@ -332,6 +609,16 @@ async function handleWordClick(wb: WordBreakdown, sub: EnhancedSubtitle) {
   const token = await getToken();
   if (!token) {
     showToast('Sign in to save words', 'info');
+    return;
+  }
+
+  // Detect fallback English spans: wb has no real breakdown (word == transliteration, no translation)
+  // and the word is Latin-only while the source language is non-Latin. These can't be saved
+  // as meaningful dictionary entries — the user should click the Japanese or romaji word instead.
+  const isLatinOnly = /^[a-zA-Z\s'-]+$/.test(wb.word);
+  const nonLatinSource = ['ja', 'zh', 'ko', 'ar', 'ru'].includes(sub.sourceLanguage);
+  if (isLatinOnly && nonLatinSource && wb.transliteration === wb.word && !wb.translation) {
+    showToast('Click a Japanese or romaji word to save', 'info');
     return;
   }
 
@@ -371,23 +658,41 @@ async function handleWordClick(wb: WordBreakdown, sub: EnhancedSubtitle) {
 // ── Subtitle processing ───────────────────────────────────────────────────────
 
 async function processSubtitleText(text: string) {
-  if (!overlay || processingLock) return;
-  processingLock = true;
+  if (!overlay) return;
 
   const trimmed = text.trim();
   const lang = detectLang(trimmed);
 
+  subtitleHistory.push(trimmed);
+  if (subtitleHistory.length > MAX_HISTORY) subtitleHistory.shift();
+
+  if (!preloadingInitialized && lang !== 'auto') {
+    preloadingInitialized = true;
+    initPreloading(lang).catch(() => {});
+  }
+
+  // ── Fast path: preloaded / cached result → instant render, zero loading flash ──
+  if (subtitleCache.has(trimmed)) {
+    overlay.style.display = 'flex';
+    const cached = subtitleCache.get(trimmed)!;
+    currentSubtitle = cached;
+    renderSubtitle(cached);
+    return;
+  }
+
+  // ── Slow path: needs a network round-trip ────────────────────────────────
+  // Only one request at a time; queue the latest text for when the lock releases.
+  if (processingLock) {
+    pendingText = text;
+    return;
+  }
+  processingLock = true;
+  pendingText = null;
+
   overlay.style.display = 'flex';
-  showLoading(trimmed, lang); // words are clickable immediately
+  showLoading(trimmed, lang); // Japanese tokens clickable immediately while we wait
 
   try {
-    if (subtitleCache.has(trimmed)) {
-      const cached = subtitleCache.get(trimmed)!;
-      currentSubtitle = cached;
-      renderSubtitle(cached);
-      return;
-    }
-
     const token = await getToken();
 
     const res = await proxyFetch(`${API_URL}/api/subtitles/enhance`, {
@@ -413,7 +718,123 @@ async function processSubtitleText(text: string) {
     showFallback(trimmed, lang);
   } finally {
     processingLock = false;
+    const queued = pendingText;
+    if (queued) {
+      pendingText = null;
+      processSubtitleText(queued);
+    }
   }
+}
+
+// ── Caption preloading ────────────────────────────────────────────────────────
+
+// Inject a tiny script to read ytInitialPlayerResponse (page global) and post it back.
+// Content scripts run in an isolated world but share window with the page, so
+// postMessage works as the bridge.
+function getYTCaptionTracks(): Promise<Array<{ baseUrl: string; languageCode: string }> | null> {
+  return new Promise((resolve) => {
+    const nonce = `subly_${Date.now()}`;
+    const handler = (e: MessageEvent) => {
+      if ((e.data as Record<string, unknown>)?.type === nonce) {
+        window.removeEventListener('message', handler);
+        resolve((e.data as Record<string, unknown>).tracks as Array<{ baseUrl: string; languageCode: string }> | null);
+      }
+    };
+    window.addEventListener('message', handler);
+
+    const s = document.createElement('script');
+    s.textContent = `(function(){var r=null;try{var p=window.ytInitialPlayerResponse;r=(p&&p.captions&&p.captions.playerCaptionsTracklistRenderer&&p.captions.playerCaptionsTracklistRenderer.captionTracks)||null;}catch(e){}window.postMessage({type:${JSON.stringify(nonce)},tracks:r},'*');})();`;
+    (document.head || document.documentElement).appendChild(s);
+    s.remove();
+
+    setTimeout(() => { window.removeEventListener('message', handler); resolve(null); }, 2000);
+  });
+}
+
+async function fetchCaptionEntries(baseUrl: string): Promise<CaptionEntry[]> {
+  try {
+    const res = await proxyFetch(baseUrl + '&fmt=json3', {});
+    if (!res.ok) return [];
+    const data = res.data as { events?: Record<string, unknown>[] };
+    return (data.events ?? [])
+      .filter((e) => Array.isArray(e.segs))
+      .map((e) => ({
+        tStartMs: (e.tStartMs as number) ?? 0,
+        dDurationMs: (e.dDurationMs as number) ?? 3000,
+        text: (e.segs as Array<{ utf8?: string }>)
+          .map((s) => s.utf8 ?? '')
+          .join('')
+          .replace(/\n/g, ' ')
+          .trim(),
+      }))
+      .filter((e) => e.text.length > 0);
+  } catch {
+    return [];
+  }
+}
+
+async function preloadUpcomingSubtitles() {
+  if (captionEntries.length === 0) return;
+  const video = document.querySelector<HTMLVideoElement>('video');
+  if (!video) return;
+
+  const currentMs = video.currentTime * 1000;
+  const upcoming = captionEntries
+    .filter((e) => e.tStartMs > currentMs && e.tStartMs <= currentMs + 30000)
+    .slice(0, 6);
+
+  const token = await getToken();
+  for (const entry of upcoming) {
+    const text = entry.text.trim();
+    if (!text || subtitleCache.has(text)) continue;
+    const lang = detectLang(text);
+    proxyFetch(`${API_URL}/api/subtitles/enhance`, {
+      method: 'POST',
+      headers: authHeaders(token),
+      body: JSON.stringify({ text, source_language: lang, target_language: 'en' }),
+    })
+      .then((res) => {
+        if (res.ok) subtitleCache.set(text, res.data as EnhancedSubtitle);
+      })
+      .catch(() => {});
+  }
+}
+
+async function initPreloading(sourceLang: string) {
+  // Short delay so ytInitialPlayerResponse has time to settle after navigation
+  await new Promise((r) => setTimeout(r, 300));
+
+  let tracks = await getYTCaptionTracks();
+  if (!tracks?.length) {
+    // ytInitialPlayerResponse may still be stale — retry once after 3s
+    await new Promise((r) => setTimeout(r, 3000));
+    tracks = await getYTCaptionTracks();
+    if (!tracks?.length) return;
+  }
+
+  // Prefer a track matching the source language; fall back to first available
+  const track =
+    tracks.find((t) => t.languageCode && t.languageCode.startsWith(sourceLang)) ?? tracks[0];
+  if (!track?.baseUrl) return;
+
+  captionEntries = await fetchCaptionEntries(track.baseUrl);
+  if (captionEntries.length === 0) return;
+
+  console.log(`[Subly] Preloaded ${captionEntries.length} caption entries for ${track.languageCode}`);
+
+  // Preload immediately then every 3 seconds (was 5s)
+  preloadUpcomingSubtitles().catch(() => {});
+  if (preloadTimer !== null) clearInterval(preloadTimer);
+  preloadTimer = window.setInterval(() => preloadUpcomingSubtitles().catch(() => {}), 3000);
+}
+
+function stopPreloading() {
+  if (preloadTimer !== null) {
+    clearInterval(preloadTimer);
+    preloadTimer = null;
+  }
+  captionEntries = [];
+  preloadingInitialized = false;
 }
 
 // ── Caption observer ──────────────────────────────────────────────────────────
@@ -434,7 +855,7 @@ function startCaptionObserver() {
   captionObserver = new MutationObserver(() => {
     const text = getCaptionText();
     if (!text) {
-      if (overlay) overlay.style.display = 'none';
+      // Keep last subtitle visible during silence — just reset so next line is processed
       lastText = '';
       return;
     }
@@ -451,6 +872,7 @@ function stopCaptionObserver() {
   captionObserver = null;
   lastText = '';
   processingLock = false;
+  pendingText = null;
 }
 
 function waitForElement(selector: string, callback: (el: Element) => void, timeout = 15000) {
@@ -472,12 +894,18 @@ function waitForElement(selector: string, callback: (el: Element) => void, timeo
 
 function enableSubly() {
   if (!overlay) overlay = createOverlay();
+  if (!transcriptEl) transcriptEl = createTranscript();
+  transcriptEl.classList.remove('subly-transcript--hidden');
+  startPositionTracking();
   waitForElement('.ytp-caption-window-container', () => startCaptionObserver());
 }
 
 function disableSubly() {
   stopCaptionObserver();
+  stopPreloading();
+  stopPositionTracking();
   if (overlay) overlay.style.display = 'none';
+  if (transcriptEl) transcriptEl.classList.add('subly-transcript--hidden');
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -506,8 +934,17 @@ chrome.runtime.onMessage.addListener((message: { type: string; enabled?: boolean
 document.addEventListener('yt-navigate-finish', () => {
   lastText = '';
   subtitleCache.clear();
+  subtitleHistory.length = 0;
   stopCaptionObserver();
+  stopPreloading();
+  stopPositionTracking();
+  // Clear transcript for the new video
+  if (transcriptBodyEl) transcriptBodyEl.innerHTML = '';
+  autoScrollTranscript = true;
   if (enabled) {
-    setTimeout(() => waitForElement('.ytp-caption-window-container', () => startCaptionObserver()), 1000);
+    setTimeout(() => {
+      startPositionTracking();
+      waitForElement('.ytp-caption-window-container', () => startCaptionObserver());
+    }, 1000);
   }
 });

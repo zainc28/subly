@@ -82,7 +82,7 @@ export async function translateText(
 
   try {
     const url = `https://api.mymemory.translated.net/get?q=${encodeURIComponent(text)}&langpair=${sourceLang}|${targetLang}`;
-    const res = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    const res = await fetch(url, { signal: AbortSignal.timeout(3000) });
     const data = await res.json() as any;
 
     if (data.responseStatus === 200) {
