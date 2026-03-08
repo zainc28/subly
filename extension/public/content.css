@@ -1,51 +1,44 @@
+/* ── Atkinson Hyperlegible font ───────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:ital,wght@0,400;0,700;1,400;1,700&display=swap');
+
 /* ── Hide native YouTube subtitles ────────────────────────────────────────── */
 
 .ytp-caption-window-container {
   visibility: hidden !important;
 }
 
-/* ── Subly overlay container ──────────────────────────────────────────────── */
+/* ── Subly overlay — full-width bar pinned above the video controls ───────── */
 
 #subly-overlay {
   position: fixed;
-  bottom: 80px; /* fallback — JS overrides via updateOverlayPosition() */
-  left: 50%;
-  transform: translateX(-50%);
+  bottom: 80px; /* JS overrides via updateOverlayPosition() */
+  left: 0;
+  width: 100%;
   z-index: 2147483647;
 
-  /* Glassmorphism card */
-  background: rgba(8, 8, 18, 0.82);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  border-radius: 14px;
-  padding: 14px 20px 12px;
+  background: rgba(17, 24, 39, 0.9);
+  padding: 8px 40px 10px;
 
-  min-width: 280px;
-  max-width: 80vw;
   text-align: center;
-  cursor: grab;
+  cursor: ns-resize;
   user-select: none;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
-  color: #e2e8f0; /* base text color — overrides any dark page inheritance */
+  font-family: 'Atkinson Hyperlegible', sans-serif;
+  color: #e2e8f0;
 
   display: none; /* JS sets display:flex to show */
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 
-  box-shadow:
-    0 8px 32px rgba(0, 0, 0, 0.5),
-    0 0 0 1px rgba(124, 58, 237, 0.15) inset;
-
-  animation: subly-fadein 0.2s ease;
+  animation: subly-fadein 0.15s ease;
 }
 
 @keyframes subly-fadein {
-  from { opacity: 0; transform: translateX(-50%) translateY(6px); }
-  to   { opacity: 1; transform: translateX(-50%) translateY(0); }
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-/* ── All subtitle rows share the same flex layout ────────────────────────── */
+/* ── All subtitle rows ────────────────────────────────────────────────────── */
 
 .subly-translation,
 .subly-words,
@@ -54,29 +47,28 @@
   flex-wrap: wrap;
   justify-content: center;
   align-items: center;
-  gap: 4px 8px;
-  min-height: 22px;
-  line-height: 1.4;
+  gap: 2px 6px;
+  min-height: 20px;
+  line-height: 1.35;
 }
 
-/* Translation row: plain text — needs its own size/color since there are no child spans */
+/* Translation row — compact, lighter */
 .subly-translation {
   font-size: 13px;
-  color: rgba(148, 163, 184, 0.9);
   letter-spacing: 0.01em;
 }
 
-/* ── Shared word span (used in all three rows) ───────────────────────────── */
+/* ── Shared word span ────────────────────────────────────────────────────── */
 
 .subly-word {
   display: inline-block;
-  font-size: 16px;
-  line-height: 1.4;
+  font-size: 15px;
+  line-height: 1.35;
   cursor: pointer;
-  border-bottom: 2px solid currentColor;
+  border-bottom: 1.5px solid currentColor;
   padding-bottom: 1px;
-  border-radius: 2px;
-  transition: opacity 0.15s, transform 0.15s;
+  border-radius: 1px;
+  transition: opacity 0.15s, transform 0.12s;
 }
 
 .subly-word:hover {
@@ -84,35 +76,27 @@
   transform: translateY(-1px);
 }
 
-.subly-word:active { transform: translateY(0) scale(0.96); }
+.subly-word:active { transform: translateY(0) scale(0.97); }
 
 /* ── Row-specific word styling ───────────────────────────────────────────── */
 
-/* English translation row — regular weight */
+/* English — base pastels, regular weight */
 .subly-translation .subly-word {
   font-weight: 400;
-  opacity: 0.85;
-  border-bottom-width: 1px;
+  font-size: 13px;
 }
 
-/* Original language row — bold, full opacity, slightly larger */
+/* Original script — bolder, slightly larger */
 .subly-words .subly-word {
   font-weight: 700;
-  font-size: 18px;
+  font-size: 17px;
 }
 
-/* Transliteration / romaji row — italic, regular weight */
+/* Transliteration — italic, regular weight */
 .subly-transliteration .subly-word {
   font-weight: 400;
   font-style: italic;
-  opacity: 0.85;
-  border-bottom-width: 1px;
-}
-
-/* Hover brightens all rows */
-.subly-translation .subly-word:hover,
-.subly-transliteration .subly-word:hover {
-  opacity: 1;
+  font-size: 13px;
 }
 
 /* ── Word tooltip ─────────────────────────────────────────────────────────── */

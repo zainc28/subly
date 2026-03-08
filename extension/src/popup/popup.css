@@ -1,3 +1,7 @@
+/* ── Fonts ────────────────────────────────────────────────────────────────── */
+
+@import url('https://fonts.googleapis.com/css2?family=Nunito:wght@400;600;700&display=swap');
+
 /* ── Design tokens ────────────────────────────────────────────────────────── */
 
 :root {
@@ -94,48 +98,31 @@ body {
   padding-top: 12px;
 }
 
-/* ── Logo mark ───────────────────────────────────────────────────────────── */
+/* ── Logo image ──────────────────────────────────────────────────────────── */
 
-.logo-mark {
-  width: 44px;
-  height: 44px;
-  border-radius: 13px;
-  background: linear-gradient(145deg, #7c3aed 0%, #0ea5e9 100%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 22px;
-  font-weight: 800;
-  color: #fff;
-  box-shadow:
-    0 0 0 1px rgba(124, 58, 237, 0.4),
-    0 0 24px rgba(124, 58, 237, 0.4),
-    0 4px 12px rgba(0, 0, 0, 0.4);
+.logo-img {
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
   flex-shrink: 0;
-  letter-spacing: -0.5px;
+  display: block;
 }
 
-.logo-mark--sm {
-  width: 30px;
-  height: 30px;
-  border-radius: 9px;
-  font-size: 14px;
-  box-shadow:
-    0 0 0 1px rgba(124, 58, 237, 0.35),
-    0 0 14px rgba(124, 58, 237, 0.3);
+.logo-img--sm {
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
 }
 
 .logo-text { display: flex; flex-direction: column; }
 
 .logo-name {
-  font-size: 22px;
-  font-weight: 800;
-  background: linear-gradient(100deg, var(--color-primary-lit) 0%, var(--color-sky-lit) 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+  font-family: 'Nunito', sans-serif;
+  font-weight: 600;
+  font-size: 20px;
+  color: #C4B8D4;
   line-height: 1.2;
-  letter-spacing: -0.3px;
+  letter-spacing: 0.01em;
 }
 
 .logo-tagline {
@@ -159,7 +146,24 @@ body {
   transition: opacity 0.15s;
 }
 
-.dash-logo:hover { opacity: 0.8; }
+.dash-logo:hover { opacity: 0.75; }
+
+/* ── Sign out link ───────────────────────────────────────────────────────── */
+
+.signout-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  opacity: 0.5;
+  padding: 4px 0;
+  font-family: inherit;
+  transition: opacity 0.15s;
+  letter-spacing: 0.02em;
+}
+
+.signout-btn:hover { opacity: 0.85; }
 
 /* ── Auth form ───────────────────────────────────────────────────────────── */
 

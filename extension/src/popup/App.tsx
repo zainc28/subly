@@ -88,9 +88,7 @@ function AuthView({ onAuth }: { onAuth: (user: User) => void }) {
   return (
     <div className="view auth-view">
       <div className="auth-logo">
-        <div className="logo-mark">
-          <span>S</span>
-        </div>
+        <img src="subly-logo.svg" alt="Subly" className="logo-img" />
         <div className="logo-text">
           <span className="logo-name">Subly</span>
           <span className="logo-tagline">Language learning, reimagined</span>
@@ -331,12 +329,10 @@ function DashboardView({
     <div className="view dashboard-view">
       <header className="dash-header">
         <button className="dash-logo" onClick={openWebsite} title="Open Subly Dashboard">
-          <div className="logo-mark logo-mark--sm">
-            <span>S</span>
-          </div>
+          <img src="subly-logo.svg" alt="Subly" className="logo-img logo-img--sm" />
           <span className="logo-name">Subly</span>
         </button>
-        <button className="btn btn--ghost btn--sm" onClick={onSignOut}>
+        <button className="signout-btn" onClick={onSignOut}>
           Sign out
         </button>
       </header>
@@ -441,11 +437,6 @@ function DashboardView({
         )}
       </div>
 
-      {!isYouTube && (
-        <button className="btn btn--primary btn--full" onClick={openYouTube}>
-          ▶ Open YouTube
-        </button>
-      )}
     </div>
   );
 }

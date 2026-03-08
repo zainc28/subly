@@ -58,7 +58,50 @@ function authHeaders(token: string | null): Record<string, string> {
 
 // ── Client-side word tokenisation (shows words before API responds) ───────────
 
-const WORD_COLORS = ['#a78bfa', '#60a5fa', '#34d399', '#f472b6', '#fb923c'];
+// Three-tier color system — same hue index across all rows, saturation varies by row.
+// English (base pastels) → Transliteration (70% sat) → Original script (45% sat)
+const WORD_COLORS    = ['#93C5FD', '#86EFAC', '#FCA5A5', '#6EE7E7']; // English base
+const WORD_COLORS_TR = [           // Transliteration — same hues, 70% saturation
+  'hsl(212,70%,78%)', 'hsl(142,70%,73%)', 'hsl(0,70%,82%)', 'hsl(180,70%,67%)',
+];
+const WORD_COLORS_OR = [           // Original script — same hues, 45% saturation
+  'hsl(212,45%,78%)', 'hsl(142,45%,73%)', 'hsl(0,45%,82%)', 'hsl(180,45%,67%)',
+];
+
+// Maps each English sentence word to the colorIndex of the token whose translation
+// it best matches, so English/translit/original words that correspond share the same hue.
+function matchEnglishToTokens(enWords: string[], tokens: { translation?: string }[]): number[] {
+  const result = new Array(enWords.length).fill(-1);
+  const glosses = tokens.map((wb, i) => ({
+    i,
+    words: (wb.translation || '').toLowerCase().replace(/[^a-z\s]/g, '').split(/\s+/).filter(Boolean),
+  }));
+  // Pass 1: exact word match
+  enWords.forEach((enWord, ei) => {
+    if (result[ei] !== -1) return;
+    const w = enWord.toLowerCase().replace(/[^a-z]/g, '');
+    if (!w) return;
+    const hit = glosses.find((g) => g.words.includes(w));
+    if (hit) result[ei] = hit.i;
+  });
+  // Pass 2: prefix match — handles inflection ("getting" ↔ gloss "get")
+  enWords.forEach((enWord, ei) => {
+    if (result[ei] !== -1) return;
+    const w = enWord.toLowerCase().replace(/[^a-z]/g, '');
+    if (!w) return;
+    const hit = glosses.find((g) => g.words.some((gw) => gw.startsWith(w) || w.startsWith(gw)));
+    if (hit) result[ei] = hit.i;
+  });
+  // Pass 3: fill remaining with evenly-distributed positional fallback
+  enWords.forEach((_, ei) => {
+    if (result[ei] !== -1) return;
+    result[ei] =
+      tokens.length > 1 && enWords.length > 1
+        ? Math.round((ei * (tokens.length - 1)) / (enWords.length - 1))
+        : ei;
+  });
+  return result;
+}
 
 function clientTokenize(text: string, lang: string): string[] {
   // CJK: split every character (no spaces between words)
@@ -145,9 +188,12 @@ function updateOverlayPosition() {
   const player = document.querySelector<HTMLElement>('#movie_player');
   if (!player) return;
   const rect = player.getBoundingClientRect();
-  // 50px gap from the player's bottom edge (sits above the controls bar)
+  // Sit above the YouTube controls bar
   const fromBottom = window.innerHeight - rect.bottom + 50;
   overlay.style.bottom = `${Math.max(fromBottom, 8)}px`;
+  // Full width of the player
+  overlay.style.left = `${rect.left}px`;
+  overlay.style.width = `${rect.width}px`;
 }
 
 function startPositionTracking() {
@@ -171,11 +217,18 @@ function stopPositionTracking() {
 
 // ── Transcript sidebar ────────────────────────────────────────────────────────
 
-function buildTranscriptWordSpan(word: string, colorIndex: number, wb: WordBreakdown | null, sub: EnhancedSubtitle): HTMLElement {
+function buildTranscriptWordSpan(
+  word: string,
+  colorIndex: number,
+  wb: WordBreakdown | null,
+  sub: EnhancedSubtitle,
+  tier: 'en' | 'translit' | 'orig' = 'en',
+): HTMLElement {
+  const palette = tier === 'en' ? WORD_COLORS : tier === 'translit' ? WORD_COLORS_TR : WORD_COLORS_OR;
   const span = document.createElement('span');
   span.className = 'subly-word';
   span.textContent = word;
-  span.style.color = WORD_COLORS[colorIndex % WORD_COLORS.length];
+  span.style.color = palette[colorIndex % palette.length];
   span.addEventListener('click', () => {
     if (!wb) {
       showToast('Click a Japanese or romaji word to save', 'info');
@@ -242,10 +295,10 @@ function appendTranscriptEntry(sub: EnhancedSubtitle) {
   const wordsRow = document.createElement('div');
   wordsRow.className = 'subly-transcript-entry-words';
   if (tokens.length > 0) {
-    tokens.forEach((wb, i) => wordsRow.appendChild(buildTranscriptWordSpan(wb.word, i, wb, sub)));
+    tokens.forEach((wb, i) => wordsRow.appendChild(buildTranscriptWordSpan(wb.word, i, wb, sub, 'orig')));
   } else {
     clientTokenize(sub.original, sub.sourceLanguage).forEach((tok, i) =>
-      wordsRow.appendChild(buildTranscriptWordSpan(tok, i, null, sub)),
+      wordsRow.appendChild(buildTranscriptWordSpan(tok, i, null, sub, 'orig')),
     );
   }
 
@@ -259,15 +312,19 @@ function appendTranscriptEntry(sub: EnhancedSubtitle) {
     if (tokens.length > 0) {
       tokens.forEach((wb, i) => {
         if (wb.transliteration && wb.transliteration !== wb.word) {
-          translitRow!.appendChild(buildTranscriptWordSpan(wb.transliteration, i, wb, sub));
+          translitRow!.appendChild(buildTranscriptWordSpan(wb.transliteration, i, wb, sub, 'translit'));
           added = true;
         }
       });
     }
     if (!added) {
-      // Sentence-level transliteration (Azure) — split into words, color-match by position
-      sub.transliteration.trim().split(/\s+/).filter(Boolean).forEach((part, i) => {
-        translitRow!.appendChild(buildTranscriptWordSpan(part, i, tokens[i] ?? null, sub));
+      // Sentence-level transliteration — map words evenly to token color indices
+      const tlParts = sub.transliteration.trim().split(/\s+/).filter(Boolean);
+      tlParts.forEach((part, i) => {
+        const colorIdx = tokens.length > 1 && tlParts.length > 1
+          ? Math.round(i * (tokens.length - 1) / (tlParts.length - 1))
+          : i;
+        translitRow!.appendChild(buildTranscriptWordSpan(part, colorIdx, tokens[colorIdx] ?? null, sub, 'translit'));
       });
       added = translitRow.childNodes.length > 0;
     }
@@ -286,15 +343,17 @@ function appendTranscriptEntry(sub: EnhancedSubtitle) {
       tokens.forEach((wb, i) => {
         const g = wb.translation;
         if (g && g !== sub.original && g.length <= 20 && g.trim().split(/\s+/).length <= 3) {
-          transRow!.appendChild(buildTranscriptWordSpan(g, i, wb, sub));
+          transRow!.appendChild(buildTranscriptWordSpan(g, i, wb, sub, 'en'));
           glossCount++;
         }
       });
     }
     if (glossCount < Math.ceil(tokens.length / 2)) {
       transRow.innerHTML = '';
-      translation.trim().split(/\s+/).filter(Boolean).forEach((word, i) => {
-        transRow!.appendChild(buildTranscriptWordSpan(word, i, null, sub));
+      const enWords = translation.trim().split(/\s+/).filter(Boolean);
+      const colorIndices = matchEnglishToTokens(enWords, tokens);
+      enWords.forEach((word, i) => {
+        transRow!.appendChild(buildTranscriptWordSpan(word, colorIndices[i], null, sub, 'en'));
       });
     }
   }
@@ -349,21 +408,19 @@ function createOverlay(): HTMLDivElement {
   div.addEventListener('mousedown', (e) => {
     if ((e.target as HTMLElement).closest('.subly-word')) return;
     isDragging = true;
-    dragStartX = e.clientX - overlayX;
     dragStartY = e.clientY - overlayY;
-    div.style.cursor = 'grabbing';
+    div.style.cursor = 'ns-resize';
     e.preventDefault();
   });
 
   document.addEventListener('mousemove', (e) => {
     if (!isDragging) return;
-    overlayX = e.clientX - dragStartX;
     overlayY = e.clientY - dragStartY;
-    div.style.transform = `translateX(calc(-50% + ${overlayX}px)) translateY(${overlayY}px)`;
+    div.style.transform = `translateY(${overlayY}px)`;
   });
 
   document.addEventListener('mouseup', () => {
-    if (isDragging) { isDragging = false; div.style.cursor = 'grab'; }
+    if (isDragging) { isDragging = false; div.style.cursor = 'ns-resize'; }
   });
 
   document.body.appendChild(div);
@@ -377,11 +434,13 @@ function buildWordSpan(
   colorIndex: number,
   wb: WordBreakdown | null,
   sub: EnhancedSubtitle | null,
+  tier: 'en' | 'translit' | 'orig' = 'orig',
 ): HTMLElement {
+  const palette = tier === 'en' ? WORD_COLORS : tier === 'translit' ? WORD_COLORS_TR : WORD_COLORS_OR;
   const span = document.createElement('span');
   span.className = 'subly-word';
   span.textContent = word;
-  span.style.color = WORD_COLORS[colorIndex % WORD_COLORS.length];
+  span.style.color = palette[colorIndex % palette.length];
 
   const tooltipWb: WordBreakdown = wb ?? {
     word,
@@ -429,13 +488,13 @@ function renderSubtitle(sub: EnhancedSubtitle) {
   // Guard: MyMemory echoes the source text when it can't translate — never show that as English
   const translation = sub.translation !== sub.original ? sub.translation : '';
 
-  // ── Japanese row — always shown, colored + clickable ──────────────────────
+  // ── Original language row ─────────────────────────────────────────────────
   wordsEl.innerHTML = '';
   if (tokens.length > 0) {
-    tokens.forEach((wb, i) => wordsEl.appendChild(buildWordSpan(wb.word, i, wb, sub)));
+    tokens.forEach((wb, i) => wordsEl.appendChild(buildWordSpan(wb.word, i, wb, sub, 'orig')));
   } else {
     clientTokenize(sub.original, sub.sourceLanguage).forEach((tok, i) =>
-      wordsEl.appendChild(buildWordSpan(tok, i, null, sub)),
+      wordsEl.appendChild(buildWordSpan(tok, i, null, sub, 'orig')),
     );
   }
 
@@ -447,20 +506,24 @@ function renderSubtitle(sub: EnhancedSubtitle) {
       let added = false;
       tokens.forEach((wb, i) => {
         if (wb.transliteration && wb.transliteration !== wb.word) {
-          translitEl.appendChild(buildWordSpan(wb.transliteration, i, wb, sub));
+          translitEl.appendChild(buildWordSpan(wb.transliteration, i, wb, sub, 'translit'));
           added = true;
         }
       });
       if (!added) {
-        // Sentence-level transliteration (Azure) — split into words, color-match to tokens by position
-        sub.transliteration.trim().split(/\s+/).filter(Boolean).forEach((part, i) => {
-          translitEl.appendChild(buildWordSpan(part, i, tokens[i] ?? null, sub));
+        // Sentence-level transliteration — map words evenly to token color indices
+        const tlParts = sub.transliteration.trim().split(/\s+/).filter(Boolean);
+        tlParts.forEach((part, i) => {
+          const colorIdx = tokens.length > 1 && tlParts.length > 1
+            ? Math.round(i * (tokens.length - 1) / (tlParts.length - 1))
+            : i;
+          translitEl.appendChild(buildWordSpan(part, colorIdx, tokens[colorIdx] ?? null, sub, 'translit'));
         });
       }
     } else {
       // No word breakdown — split and color by position
       sub.transliteration.trim().split(/\s+/).filter(Boolean).forEach((part, i) => {
-        translitEl.appendChild(buildWordSpan(part, i, null, sub));
+        translitEl.appendChild(buildWordSpan(part, i, null, sub, 'translit'));
       });
     }
   }
@@ -478,16 +541,18 @@ function renderSubtitle(sub: EnhancedSubtitle) {
       tokens.forEach((wb, i) => {
         const g = wb.translation;
         if (g && g !== sub.original && g.length <= 20 && g.trim().split(/\s+/).length <= 3) {
-          translationEl.appendChild(buildWordSpan(g, i, wb, sub));
+          translationEl.appendChild(buildWordSpan(g, i, wb, sub, 'en'));
           glossCount++;
         }
       });
     }
-    // Glosses don't cover enough tokens — use sentence translation, color-coded by position
+    // Glosses don't cover enough tokens — use sentence translation with semantically-matched token indices
     if (glossCount < Math.ceil(tokens.length / 2)) {
       translationEl.innerHTML = '';
-      translation.trim().split(/\s+/).filter(Boolean).forEach((word, i) => {
-        translationEl.appendChild(buildWordSpan(word, i, null, sub));
+      const enWords = translation.trim().split(/\s+/).filter(Boolean);
+      const colorIndices = matchEnglishToTokens(enWords, tokens);
+      enWords.forEach((word, i) => {
+        translationEl.appendChild(buildWordSpan(word, colorIndices[i], null, sub, 'en'));
       });
     }
   }
@@ -507,7 +572,7 @@ function showLoading(text: string, lang: string) {
 
   // Render client-side tokens immediately for the new subtitle — clickable right away
   clientTokenize(text, lang).forEach((token, i) => {
-    const span = buildWordSpan(token, i, null, null);
+    const span = buildWordSpan(token, i, null, null, 'orig');
     span.style.opacity = '0.6';
     wordsEl.appendChild(span);
   });
@@ -520,10 +585,11 @@ function showFallback(text: string, lang: string) {
   translationEl.innerHTML = '';
   translationEl.style.opacity = '1';
   translitEl.innerHTML = '';
+  translitEl.style.opacity = '1';
   wordsEl.innerHTML = '';
 
   clientTokenize(text, lang).forEach((token, i) => {
-    wordsEl.appendChild(buildWordSpan(token, i, null, null));
+    wordsEl.appendChild(buildWordSpan(token, i, null, null, 'orig'));
   });
 }
 
