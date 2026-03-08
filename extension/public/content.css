@@ -303,10 +303,23 @@
 }
 
 .subly-transcript-entry-translation {
-  font-size: 11px;
-  color: rgba(148, 163, 184, 0.55);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 4px;
   line-height: 1.4;
   margin-top: 1px;
+}
+
+.subly-transcript-entry-translation .subly-word {
+  font-size: 11px;
+  font-weight: 400;
+  border-bottom-width: 1px;
+  opacity: 0.85;
+}
+
+/* Translation row sits on top — give it a faint separator from the translit below */
+.subly-transcript-entry-translation {
+  padding-bottom: 2px;
 }
 
 /* ── Toast notifications ──────────────────────────────────────────────────── */

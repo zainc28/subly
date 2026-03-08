@@ -76,6 +76,43 @@ create policy "dictionaries: insert own" on public.user_dictionaries
 create policy "dictionaries: delete own" on public.user_dictionaries
   for delete using (auth.uid() = user_id);
 
+-- ── translation_cache ────────────────────────────────────────────────────────
+-- Shared persistent cache for all translations/transliterations.
+-- Survives server restarts; reduces Azure API calls for previously-seen text.
+-- Key: SHA-256 hex of "sourceLang|targetLang|normalizedText"
+--
+-- Caching schema:
+--   hash           — PRIMARY KEY, 64-char hex SHA-256
+--   source_lang    — BCP-47 language code (e.g. "ja", "ar", "ko")
+--   target_lang    — typically "en"
+--   source_text    — original subtitle text (stored for debugging / audit)
+--   translation    — full-sentence translation
+--   transliteration — romanised form (empty string if not applicable)
+--   word_breakdown  — JSON array of WordBreakdown objects
+--   hit_count      — how many times this entry has been served from cache
+--   created_at     — first time this text was translated
+--   last_used_at   — updated on every cache hit (used for LRU eviction)
+
+create table if not exists public.translation_cache (
+  hash            text primary key,
+  source_lang     text not null,
+  target_lang     text not null default 'en',
+  source_text     text not null,
+  translation     text not null,
+  transliteration text not null default '',
+  word_breakdown  jsonb not null default '[]',
+  hit_count       integer not null default 1,
+  created_at      timestamptz not null default now(),
+  last_used_at    timestamptz not null default now()
+);
+
+-- No RLS — this is a shared server-side cache accessed only via service role key
+alter table public.translation_cache disable row level security;
+
+-- Fast hash lookups (primary key covers this, but explicit index for clarity)
+create index if not exists translation_cache_last_used_idx
+  on public.translation_cache(last_used_at desc);
+
 -- ── increment_usage RPC ──────────────────────────────────────────────────────
 -- Call this from the backend to track minutes consumed.
 

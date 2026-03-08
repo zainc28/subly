@@ -4,7 +4,7 @@ import dotenv from 'dotenv';
 
 dotenv.config();
 
-import { initKuroshiro } from './services/translation';
+import { initKuroshiro, warmCachesFromDB } from './services/translation';
 import subtitlesRouter from './routes/subtitles';
 import dictionaryRouter from './routes/dictionary';
 import userRouter from './routes/user';
@@ -63,6 +63,9 @@ async function main() {
   initKuroshiro().catch((err) => {
     console.error('[Subly] Kuroshiro init failed — Japanese romanisation unavailable:', err);
   });
+
+  // Warm in-memory caches from Supabase so cold-restart doesn't cause DB hits
+  warmCachesFromDB().catch(() => {});
 
   app.listen(PORT, () => {
     console.log(`[Subly] Backend running on http://localhost:${PORT}`);

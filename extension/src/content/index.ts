@@ -1,4 +1,5 @@
 import type { EnhancedSubtitle, WordBreakdown } from '../lib/api';
+import { bulkLoadFromStorage, readFromStorage, writeToStorage } from '../lib/persistentCache';
 
 // Vite inlines this at build time from extension/.env
 const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:3000';
@@ -8,6 +9,7 @@ const API_URL = (import.meta.env.VITE_API_URL as string) || 'http://localhost:30
 function detectLang(text: string): string {
   if (/[\u3040-\u309f\u30a0-\u30ff]/.test(text)) return 'ja'; // hiragana / katakana
   if (/[\uac00-\ud7af]/.test(text)) return 'ko';              // hangul
+  if (/[\u06ba\u06d2\u06be\u0688\u0691\u0679]/.test(text)) return 'ur'; // urdu-specific chars
   if (/[\u0600-\u06ff]/.test(text)) return 'ar';              // arabic
   if (/[\u0400-\u04ff]/.test(text)) return 'ru';              // cyrillic
   if (/[\u4e00-\u9fff]/.test(text)) return 'zh';              // CJK (chinese)
@@ -82,6 +84,7 @@ interface CaptionEntry {
 let captionEntries: CaptionEntry[] = [];
 let preloadTimer: number | null = null;
 let preloadingInitialized = false;
+let preloadInFlight = false;
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -94,6 +97,7 @@ let pendingText: string | null = null;
 let currentSubtitle: EnhancedSubtitle | null = null;
 
 const subtitleCache = new Map<string, EnhancedSubtitle>();
+const transcriptSeen = new Set<string>();
 
 // Drag state
 let isDragging = false;
@@ -109,6 +113,13 @@ let playerObserver: ResizeObserver | null = null;
 let transcriptEl: HTMLDivElement | null = null;
 let transcriptBodyEl: HTMLDivElement | null = null;
 let autoScrollTranscript = true;
+
+// Timer-loop state (Change 3)
+let timerLoopId: number | null = null;
+let lastShownTStartMs: number = -1;
+
+// Silence-gap debounce (Change 1)
+let silenceTimer: number | null = null;
 
 // ── Auth token ────────────────────────────────────────────────────────────────
 
@@ -191,6 +202,7 @@ function createTranscript(): HTMLDivElement {
   clearBtn.textContent = 'Clear';
   clearBtn.addEventListener('click', () => {
     if (transcriptBodyEl) transcriptBodyEl.innerHTML = '';
+    transcriptSeen.clear();
   });
 
   header.appendChild(title);
@@ -216,17 +228,19 @@ function appendTranscriptEntry(sub: EnhancedSubtitle) {
   if (!transcriptBodyEl) return;
 
   // Deduplicate: same subtitle re-rendered (silence reset, cache hit after API, etc.)
-  const last = transcriptBodyEl.lastElementChild as HTMLElement | null;
-  if (last?.dataset.text === sub.original) return;
+  const key = sub.original + '|' + ((sub as any).tStartMs ?? '');
+  if (transcriptSeen.has(key)) return;
+  transcriptSeen.add(key);
 
   const entry = document.createElement('div');
   entry.className = 'subly-transcript-entry';
   entry.dataset.text = sub.original;
 
-  // Japanese words row (color-coded, clickable to save)
+  const tokens = sub.wordBreakdown.filter((wb) => wb.word.trim());
+
+  // ── Original words row (appended last — bottom)
   const wordsRow = document.createElement('div');
   wordsRow.className = 'subly-transcript-entry-words';
-  const tokens = sub.wordBreakdown.filter((wb) => wb.word.trim());
   if (tokens.length > 0) {
     tokens.forEach((wb, i) => wordsRow.appendChild(buildTranscriptWordSpan(wb.word, i, wb, sub)));
   } else {
@@ -234,30 +248,61 @@ function appendTranscriptEntry(sub: EnhancedSubtitle) {
       wordsRow.appendChild(buildTranscriptWordSpan(tok, i, null, sub)),
     );
   }
-  entry.appendChild(wordsRow);
 
-  // Romaji row (color-coded, clickable to save the underlying Japanese word)
+  // ── Transliteration row (middle)
   const hasTranslit = !!(sub.transliteration && sub.transliteration !== sub.original);
-  if (hasTranslit && tokens.length > 0) {
-    const translitRow = document.createElement('div');
+  let translitRow: HTMLDivElement | null = null;
+  if (hasTranslit) {
+    translitRow = document.createElement('div');
     translitRow.className = 'subly-transcript-entry-translit';
     let added = false;
-    tokens.forEach((wb, i) => {
-      if (wb.transliteration && wb.transliteration !== wb.word) {
-        translitRow.appendChild(buildTranscriptWordSpan(wb.transliteration, i, wb, sub));
-        added = true;
-      }
-    });
-    if (added) entry.appendChild(translitRow);
+    if (tokens.length > 0) {
+      tokens.forEach((wb, i) => {
+        if (wb.transliteration && wb.transliteration !== wb.word) {
+          translitRow!.appendChild(buildTranscriptWordSpan(wb.transliteration, i, wb, sub));
+          added = true;
+        }
+      });
+    }
+    if (!added) {
+      // Sentence-level transliteration (Azure) — split into words, color-match by position
+      sub.transliteration.trim().split(/\s+/).filter(Boolean).forEach((part, i) => {
+        translitRow!.appendChild(buildTranscriptWordSpan(part, i, tokens[i] ?? null, sub));
+      });
+      added = translitRow.childNodes.length > 0;
+    }
+    if (!added) translitRow = null;
   }
 
-  // English translation — plain sentence text
-  if (sub.translation) {
-    const transRow = document.createElement('div');
+  // ── English translation row (top)
+  const translation = sub.translation !== sub.original ? sub.translation : '';
+  let transRow: HTMLDivElement | null = null;
+  if (translation) {
+    transRow = document.createElement('div');
     transRow.className = 'subly-transcript-entry-translation';
-    transRow.textContent = sub.translation;
-    entry.appendChild(transRow);
+
+    let glossCount = 0;
+    if (tokens.length > 0) {
+      tokens.forEach((wb, i) => {
+        const g = wb.translation;
+        if (g && g !== sub.original && g.length <= 20 && g.trim().split(/\s+/).length <= 3) {
+          transRow!.appendChild(buildTranscriptWordSpan(g, i, wb, sub));
+          glossCount++;
+        }
+      });
+    }
+    if (glossCount < Math.ceil(tokens.length / 2)) {
+      transRow.innerHTML = '';
+      translation.trim().split(/\s+/).filter(Boolean).forEach((word, i) => {
+        transRow!.appendChild(buildTranscriptWordSpan(word, i, null, sub));
+      });
+    }
   }
+
+  // ── Append in order: translation (top) → transliteration (middle) → original (bottom)
+  if (transRow) entry.appendChild(transRow);
+  if (translitRow) entry.appendChild(translitRow);
+  entry.appendChild(wordsRow);
 
   transcriptBodyEl.appendChild(entry);
 
@@ -292,8 +337,8 @@ function createOverlay(): HTMLDivElement {
   div.id = 'subly-overlay';
   div.innerHTML = `
     <div class="subly-translation" id="subly-translation"></div>
-    <div class="subly-words" id="subly-words"></div>
     <div class="subly-transliteration" id="subly-transliteration"></div>
+    <div class="subly-words" id="subly-words"></div>
     <div class="subly-tooltip" id="subly-tooltip"></div>
   `;
 
@@ -396,6 +441,7 @@ function renderSubtitle(sub: EnhancedSubtitle) {
 
   // ── Romaji row — shown whenever transliteration differs from original ─────
   translitEl.innerHTML = '';
+  translitEl.style.opacity = '1';
   if (hasTranslit) {
     if (tokens.length > 0) {
       let added = false;
@@ -405,9 +451,17 @@ function renderSubtitle(sub: EnhancedSubtitle) {
           added = true;
         }
       });
-      if (!added) translitEl.textContent = sub.transliteration;
+      if (!added) {
+        // Sentence-level transliteration (Azure) — split into words, color-match to tokens by position
+        sub.transliteration.trim().split(/\s+/).filter(Boolean).forEach((part, i) => {
+          translitEl.appendChild(buildWordSpan(part, i, tokens[i] ?? null, sub));
+        });
+      }
     } else {
-      translitEl.textContent = sub.transliteration;
+      // No word breakdown — split and color by position
+      sub.transliteration.trim().split(/\s+/).filter(Boolean).forEach((part, i) => {
+        translitEl.appendChild(buildWordSpan(part, i, null, sub));
+      });
     }
   }
 
@@ -445,12 +499,13 @@ function showLoading(text: string, lang: string) {
   if (!overlay) return;
   const { translationEl, wordsEl, translitEl } = getOverlayEls();
 
-  translationEl.textContent = '…';
-  translationEl.style.opacity = '0.35';
-  translitEl.textContent = '';
+  // Keep previous translation + transliteration visible but faded — much better UX
+  // than "…". They'll be replaced instantly when the API responds.
+  translationEl.style.opacity = '0.25';
+  translitEl.style.opacity = '0.25';
   wordsEl.innerHTML = '';
 
-  // Render client-side tokens immediately in the original row — clickable right away
+  // Render client-side tokens immediately for the new subtitle — clickable right away
   clientTokenize(text, lang).forEach((token, i) => {
     const span = buildWordSpan(token, i, null, null);
     span.style.opacity = '0.6';
@@ -586,6 +641,28 @@ async function fetchAndShowAIDef(tooltip: HTMLElement, wb: WordBreakdown) {
   });
 }
 
+// ── Per-word transliteration extraction ──────────────────────────────────────
+// For Japanese, wb.transliteration already holds romaji from Kuroshiro.
+// For Azure languages (ar, ko, zh, ur), only sentence-level transliteration is
+// available in sub.transliteration. We positionally align by splitting both the
+// original and transliteration strings into tokens and finding the word's index.
+
+function extractWordTranslit(wb: WordBreakdown, sub: EnhancedSubtitle): string {
+  // Japanese and other per-word cases: already distinct
+  if (wb.transliteration && wb.transliteration !== wb.word) return wb.transliteration;
+  // No sentence-level transliteration available
+  if (!sub.transliteration || sub.transliteration === sub.original) return '';
+  // Split original and transliteration into parallel token arrays
+  const lang = sub.sourceLanguage;
+  const origTokens =
+    lang === 'zh' || lang === 'ja'
+      ? Array.from(sub.original).filter((c) => c.trim())
+      : sub.original.trim().split(/\s+/);
+  const translitTokens = sub.transliteration.trim().split(/\s+/);
+  const idx = origTokens.indexOf(wb.word);
+  return idx !== -1 && idx < translitTokens.length ? translitTokens[idx] : '';
+}
+
 // ── Word save ─────────────────────────────────────────────────────────────────
 
 // Fetch a per-word translation directly from MyMemory when the cache hasn't warmed yet.
@@ -628,13 +705,16 @@ async function handleWordClick(wb: WordBreakdown, sub: EnhancedSubtitle) {
     wordTranslation = await fetchWordTranslation(wb.word, sub.sourceLanguage);
   }
 
+  // Extract per-word transliteration (Azure provides sentence-level only)
+  const wordTranslit = extractWordTranslit(wb, sub) || wb.transliteration || wb.word;
+
   try {
     const res = await proxyFetch(`${API_URL}/api/dictionary`, {
       method: 'POST',
       headers: authHeaders(token),
       body: JSON.stringify({
         word: wb.word,
-        transliteration: wb.transliteration || wb.word,
+        transliteration: wordTranslit,
         translation: wordTranslation,           // correct per-word translation, not the sentence
         context_sentence: sub.original,
         source_language: sub.sourceLanguage,
@@ -671,7 +751,7 @@ async function processSubtitleText(text: string) {
     initPreloading(lang).catch(() => {});
   }
 
-  // ── Fast path: preloaded / cached result → instant render, zero loading flash ──
+  // ── L1: in-memory cache → sync, 0ms ──────────────────────────────────────
   if (subtitleCache.has(trimmed)) {
     overlay.style.display = 'flex';
     const cached = subtitleCache.get(trimmed)!;
@@ -680,7 +760,19 @@ async function processSubtitleText(text: string) {
     return;
   }
 
-  // ── Slow path: needs a network round-trip ────────────────────────────────
+  // ── L2: persistent extension cache → ~2ms, avoids loading flash ──────────
+  // This covers subtitles the pre-warm missed (e.g. MutationObserver path,
+  // or if the user skipped into the video past the preload window).
+  const persisted = await readFromStorage(lang === 'auto' ? 'auto' : lang, trimmed);
+  if (persisted) {
+    subtitleCache.set(trimmed, persisted);
+    overlay.style.display = 'flex';
+    currentSubtitle = persisted;
+    renderSubtitle(persisted);
+    return;
+  }
+
+  // ── L3: network request ───────────────────────────────────────────────────
   // Only one request at a time; queue the latest text for when the lock releases.
   if (processingLock) {
     pendingText = text;
@@ -690,7 +782,7 @@ async function processSubtitleText(text: string) {
   pendingText = null;
 
   overlay.style.display = 'flex';
-  showLoading(trimmed, lang); // Japanese tokens clickable immediately while we wait
+  showLoading(trimmed, lang); // tokens clickable immediately while we wait
 
   try {
     const token = await getToken();
@@ -710,6 +802,9 @@ async function processSubtitleText(text: string) {
       const firstKey = subtitleCache.keys().next().value;
       if (firstKey) subtitleCache.delete(firstKey);
     }
+
+    // Persist to chrome.storage.local for future sessions (fire-and-forget)
+    writeToStorage(lang === 'auto' ? 'auto' : lang, trimmed, result);
 
     currentSubtitle = result;
     renderSubtitle(result);
@@ -774,58 +869,95 @@ async function fetchCaptionEntries(baseUrl: string): Promise<CaptionEntry[]> {
 }
 
 async function preloadUpcomingSubtitles() {
-  if (captionEntries.length === 0) return;
+  if (captionEntries.length === 0 || preloadInFlight) return;
   const video = document.querySelector<HTMLVideoElement>('video');
   if (!video) return;
 
   const currentMs = video.currentTime * 1000;
-  const upcoming = captionEntries
-    .filter((e) => e.tStartMs > currentMs && e.tStartMs <= currentMs + 30000)
-    .slice(0, 6);
+  const toPreload = captionEntries
+    .filter((e) => e.tStartMs > currentMs && e.tStartMs <= currentMs + 60000)
+    .slice(0, 15)
+    .map((e) => e.text.trim())
+    .filter((text) => text && !subtitleCache.has(text));
 
+  if (toPreload.length === 0) return;
+
+  preloadInFlight = true;
   const token = await getToken();
-  for (const entry of upcoming) {
-    const text = entry.text.trim();
-    if (!text || subtitleCache.has(text)) continue;
-    const lang = detectLang(text);
-    proxyFetch(`${API_URL}/api/subtitles/enhance`, {
-      method: 'POST',
-      headers: authHeaders(token),
-      body: JSON.stringify({ text, source_language: lang, target_language: 'en' }),
+  proxyFetch(`${API_URL}/api/subtitles/enhance-batch`, {
+    method: 'POST',
+    headers: authHeaders(token),
+    body: JSON.stringify({
+      entries: toPreload.map((text) => ({ text, source_language: detectLang(text) })),
+    }),
+  })
+    .then((res) => {
+      if (!res.ok) return;
+      (res.data as EnhancedSubtitle[]).forEach((r) => {
+        if (!r?.original) return;
+        subtitleCache.set(r.original, r);
+        // Persist each result so future sessions load instantly
+        writeToStorage(r.sourceLanguage || 'auto', r.original, r);
+      });
     })
-      .then((res) => {
-        if (res.ok) subtitleCache.set(text, res.data as EnhancedSubtitle);
-      })
-      .catch(() => {});
-  }
+    .catch(() => {})
+    .finally(() => { preloadInFlight = false; });
 }
 
-async function initPreloading(sourceLang: string) {
-  // Short delay so ytInitialPlayerResponse has time to settle after navigation
-  await new Promise((r) => setTimeout(r, 300));
+function attachSeekDetection() {
+  const video = document.querySelector<HTMLVideoElement>('video');
+  if (!video || video.dataset.sublySeek) return;
+  video.dataset.sublySeek = '1';
+  // Re-preload immediately after seeking so the new position's window is warm
+  video.addEventListener('seeked', () => preloadUpcomingSubtitles().catch(() => {}));
+}
+
+async function initPreloading(sourceLang = '') {
+  // Mark initialized immediately to prevent concurrent duplicate calls.
+  // Reset to false below if we can't get entries, so processSubtitleText can retry.
+  preloadingInitialized = true;
 
   let tracks = await getYTCaptionTracks();
   if (!tracks?.length) {
-    // ytInitialPlayerResponse may still be stale — retry once after 3s
     await new Promise((r) => setTimeout(r, 3000));
     tracks = await getYTCaptionTracks();
-    if (!tracks?.length) return;
+    if (!tracks?.length) { preloadingInitialized = false; return; }
   }
 
-  // Prefer a track matching the source language; fall back to first available
-  const track =
-    tracks.find((t) => t.languageCode && t.languageCode.startsWith(sourceLang)) ?? tracks[0];
-  if (!track?.baseUrl) return;
+  // Known language → prefer matching track.
+  // Unknown (proactive start) → prefer first non-English, non-auto-generated track.
+  const track = sourceLang
+    ? (tracks.find((t) => t.languageCode?.startsWith(sourceLang)) ?? tracks[0])
+    : (tracks.find((t) => t.languageCode && !t.languageCode.startsWith('en') && !t.languageCode.startsWith('a.')) ?? tracks[0]);
+  if (!track?.baseUrl) { preloadingInitialized = false; return; }
 
   captionEntries = await fetchCaptionEntries(track.baseUrl);
-  if (captionEntries.length === 0) return;
+  if (captionEntries.length === 0) { preloadingInitialized = false; return; }
 
-  console.log(`[Subly] Preloaded ${captionEntries.length} caption entries for ${track.languageCode}`);
+  console.log(`[Subly] ${captionEntries.length} caption entries loaded (${track.languageCode})`);
 
-  // Preload immediately then every 3 seconds (was 5s)
+  // ── Pre-warm in-memory cache from persistent storage ─────────────────────
+  // One chrome.storage.local.get IPC call fetches ALL matching entries at once.
+  // After this resolves, the timer loop will find most subtitles in subtitleCache
+  // synchronously (0ms) — true zero-latency for previously-seen content.
+  const warmLang = sourceLang || track.languageCode?.split('-')[0] || 'auto';
+  bulkLoadFromStorage(
+    captionEntries.map((e) => ({ text: e.text.trim(), lang: warmLang })),
+  ).then((warmMap) => {
+    let count = 0;
+    warmMap.forEach((result, text) => {
+      if (!subtitleCache.has(text)) { subtitleCache.set(text, result); count++; }
+    });
+    if (count > 0) console.log(`[Subly] Pre-warmed ${count} subtitles from persistent cache`);
+  }).catch(() => {});
+
+  attachSeekDetection();
   preloadUpcomingSubtitles().catch(() => {});
   if (preloadTimer !== null) clearInterval(preloadTimer);
-  preloadTimer = window.setInterval(() => preloadUpcomingSubtitles().catch(() => {}), 3000);
+  preloadTimer = window.setInterval(() => preloadUpcomingSubtitles().catch(() => {}), 1000);
+
+  // Start timer-based delivery now that we have timestamped entries
+  startTimerLoop();
 }
 
 function stopPreloading() {
@@ -835,6 +967,75 @@ function stopPreloading() {
   }
   captionEntries = [];
   preloadingInitialized = false;
+  preloadInFlight = false;
+}
+
+// ── Timer-based subtitle delivery ─────────────────────────────────────────────
+// Drives overlay from preloaded JSON3 caption timestamps — zero latency on cache hit.
+
+function stopTimerLoop() {
+  if (timerLoopId !== null) {
+    cancelAnimationFrame(timerLoopId);
+    timerLoopId = null;
+  }
+}
+
+function startTimerLoop() {
+  stopTimerLoop();
+
+  const loop = () => {
+    if (captionEntries.length === 0) {
+      timerLoopId = null;
+      return; // entries gone (navigation reset) — stop loop
+    }
+
+    const video = document.querySelector<HTMLVideoElement>('video');
+    if (video && !video.paused) {
+      const nowMs = video.currentTime * 1000;
+      const entry = captionEntries.find(
+        (e) => e.tStartMs <= nowMs && nowMs < e.tStartMs + e.dDurationMs,
+      );
+
+      if (entry) {
+        if (entry.tStartMs !== lastShownTStartMs) {
+          lastShownTStartMs = entry.tStartMs;
+          const text = entry.text.trim();
+          const cached = subtitleCache.get(text);
+          if (cached) {
+            (cached as any).tStartMs = entry.tStartMs;
+            if (overlay) overlay.style.display = 'flex';
+            renderSubtitle(cached);
+            // Immediately trigger preload if next subtitle isn't cached yet
+            const next = captionEntries.find((e) => e.tStartMs > entry.tStartMs);
+            if (next && !subtitleCache.has(next.text.trim())) {
+              preloadUpcomingSubtitles().catch(() => {});
+            }
+          } else {
+            processSubtitleText(text);
+          }
+        }
+      } else if (lastShownTStartMs !== -1) {
+        // Gap between subtitles — hide overlay and allow the next entry to trigger
+        if (overlay) overlay.style.display = 'none';
+        lastShownTStartMs = -1;
+      }
+    }
+
+    timerLoopId = requestAnimationFrame(loop);
+  };
+
+  timerLoopId = requestAnimationFrame(loop);
+
+  // Pause: stop RAF to avoid spinning while video is paused.
+  // Play: resume loop (only if entries are loaded).
+  const video = document.querySelector<HTMLVideoElement>('video');
+  if (video && !video.dataset.sublyTimerEvents) {
+    video.dataset.sublyTimerEvents = '1';
+    video.addEventListener('pause', () => stopTimerLoop());
+    video.addEventListener('play', () => {
+      if (captionEntries.length > 0) startTimerLoop();
+    });
+  }
 }
 
 // ── Caption observer ──────────────────────────────────────────────────────────
@@ -855,10 +1056,14 @@ function startCaptionObserver() {
   captionObserver = new MutationObserver(() => {
     const text = getCaptionText();
     if (!text) {
-      // Keep last subtitle visible during silence — just reset so next line is processed
-      lastText = '';
+      // Debounce: only reset lastText if silence persists for 2s — prevents re-processing the
+      // same line after a brief gap (e.g. caption window momentarily goes empty between segments)
+      if (silenceTimer === null) {
+        silenceTimer = window.setTimeout(() => { lastText = ''; silenceTimer = null; }, 2000);
+      }
       return;
     }
+    if (silenceTimer !== null) { clearTimeout(silenceTimer); silenceTimer = null; }
     if (text === lastText) return;
     lastText = text;
     processSubtitleText(text);
@@ -897,7 +1102,14 @@ function enableSubly() {
   if (!transcriptEl) transcriptEl = createTranscript();
   transcriptEl.classList.remove('subly-transcript--hidden');
   startPositionTracking();
-  waitForElement('.ytp-caption-window-container', () => startCaptionObserver());
+  // Try timer-based delivery first (requires a JSON3 caption track)
+  if (!preloadingInitialized) initPreloading().catch(() => {});
+  // Fallback: if no caption track was found after 5s, use MutationObserver
+  setTimeout(() => {
+    if (captionEntries.length === 0) {
+      waitForElement('.ytp-caption-window-container', () => startCaptionObserver());
+    }
+  }, 5000);
 }
 
 function disableSubly() {
@@ -936,15 +1148,24 @@ document.addEventListener('yt-navigate-finish', () => {
   subtitleCache.clear();
   subtitleHistory.length = 0;
   stopCaptionObserver();
+  stopTimerLoop();
   stopPreloading();
   stopPositionTracking();
+  lastShownTStartMs = -1;
   // Clear transcript for the new video
   if (transcriptBodyEl) transcriptBodyEl.innerHTML = '';
+  transcriptSeen.clear();
   autoScrollTranscript = true;
   if (enabled) {
     setTimeout(() => {
       startPositionTracking();
-      waitForElement('.ytp-caption-window-container', () => startCaptionObserver());
+      if (!preloadingInitialized) initPreloading().catch(() => {});
+      // Fallback observer if no caption track after 5s
+      setTimeout(() => {
+        if (captionEntries.length === 0) {
+          waitForElement('.ytp-caption-window-container', () => startCaptionObserver());
+        }
+      }, 5000);
     }, 1000);
   }
 });
