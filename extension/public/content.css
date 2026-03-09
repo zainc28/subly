@@ -217,6 +217,12 @@
   letter-spacing: 0.07em;
 }
 
+.subly-transcript-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
 .subly-transcript-clear {
   background: none;
   border: none;
@@ -231,6 +237,53 @@
 .subly-transcript-clear:hover {
   color: rgba(148, 163, 184, 0.9);
   background: rgba(255, 255, 255, 0.06);
+}
+
+.subly-transcript-close {
+  background: none;
+  border: none;
+  color: rgba(148, 163, 184, 0.4);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 5px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.subly-transcript-close:hover {
+  color: rgba(148, 163, 184, 0.9);
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* ── Transcript reopen toggle ─────────────────────────────────────────────── */
+
+#subly-transcript-toggle {
+  position: fixed;
+  top: 64px;
+  right: 0;
+  z-index: 2147483641;
+
+  display: none; /* shown via JS when sidebar is closed */
+  align-items: center;
+  justify-content: center;
+
+  width: 28px;
+  height: 28px;
+  background: rgba(8, 8, 18, 0.88);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  color: rgba(148, 163, 184, 0.55);
+  cursor: pointer;
+  transition: color 0.15s, background 0.15s;
+}
+
+#subly-transcript-toggle:hover {
+  color: rgba(148, 163, 184, 1);
+  background: rgba(20, 20, 40, 0.95);
 }
 
 .subly-transcript-body {

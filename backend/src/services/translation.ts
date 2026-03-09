@@ -237,7 +237,9 @@ function azureHeaders(): Record<string, string> {
 
 async function translateWithAzure(text: string, from: string, to: string): Promise<string> {
   if (!process.env.AZURE_TRANSLATOR_KEY) throw new Error('AZURE_TRANSLATOR_KEY not set');
-  const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=${from}&to=${to}`;
+  // Omit `from` when language is unknown — Azure auto-detects; `from=auto` is invalid and returns 400
+  const fromParam = from !== 'auto' ? `&from=${from}` : '';
+  const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0${fromParam}&to=${to}`;
   const res = await fetch(url, {
     method: 'POST',
     headers: azureHeaders(),
@@ -258,7 +260,8 @@ async function translateBatchWithAzure(
   to: string,
 ): Promise<(string | null)[]> {
   if (!process.env.AZURE_TRANSLATOR_KEY || texts.length === 0) return texts.map(() => null);
-  const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0&from=${from}&to=${to}`;
+  const fromParam = from !== 'auto' ? `&from=${from}` : '';
+  const url = `https://api.cognitive.microsofttranslator.com/translate?api-version=3.0${fromParam}&to=${to}`;
   try {
     const res = await fetch(url, {
       method: 'POST',

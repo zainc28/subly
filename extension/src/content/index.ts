@@ -156,10 +156,16 @@ let playerObserver: ResizeObserver | null = null;
 let transcriptEl: HTMLDivElement | null = null;
 let transcriptBodyEl: HTMLDivElement | null = null;
 let autoScrollTranscript = true;
+let transcriptOpen = true;
+let transcriptToggleBtn: HTMLButtonElement | null = null;
 
 // Timer-loop state (Change 3)
 let timerLoopId: number | null = null;
 let lastShownTStartMs: number = -1;
+
+// YouTube English caption track — used as primary translation source when available
+// Keys are tStartMs from the English JSON3 track; values are the English text.
+let englishCaptions = new Map<number, string>();
 
 // Silence-gap debounce (Change 1)
 let silenceTimer: number | null = null;
@@ -239,6 +245,33 @@ function buildTranscriptWordSpan(
   return span;
 }
 
+function setTranscriptOpen(open: boolean) {
+  transcriptOpen = open;
+  if (transcriptEl) {
+    transcriptEl.classList.toggle('subly-transcript--hidden', !open);
+  }
+  if (transcriptToggleBtn) {
+    transcriptToggleBtn.style.display = open ? 'none' : 'flex';
+  }
+}
+
+function createTranscriptToggle(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 'subly-transcript-toggle';
+  btn.title = 'Open transcript';
+  btn.innerHTML = `<svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <rect x="1" y="2" width="8" height="1.5" rx="0.75" fill="currentColor"/>
+    <rect x="1" y="5.25" width="6" height="1.5" rx="0.75" fill="currentColor"/>
+    <rect x="1" y="8.5" width="7" height="1.5" rx="0.75" fill="currentColor"/>
+    <rect x="1" y="11.5" width="5" height="1.5" rx="0.75" fill="currentColor"/>
+  </svg>`;
+  btn.style.display = 'none';
+  btn.addEventListener('click', () => setTranscriptOpen(true));
+  document.body.appendChild(btn);
+  transcriptToggleBtn = btn;
+  return btn;
+}
+
 function createTranscript(): HTMLDivElement {
   const div = document.createElement('div');
   div.id = 'subly-transcript';
@@ -250,6 +283,9 @@ function createTranscript(): HTMLDivElement {
   title.className = 'subly-transcript-title';
   title.textContent = 'Transcript';
 
+  const actions = document.createElement('div');
+  actions.className = 'subly-transcript-actions';
+
   const clearBtn = document.createElement('button');
   clearBtn.className = 'subly-transcript-clear';
   clearBtn.textContent = 'Clear';
@@ -258,8 +294,16 @@ function createTranscript(): HTMLDivElement {
     transcriptSeen.clear();
   });
 
+  const closeBtn = document.createElement('button');
+  closeBtn.className = 'subly-transcript-close';
+  closeBtn.title = 'Close transcript';
+  closeBtn.innerHTML = '&times;';
+  closeBtn.addEventListener('click', () => setTranscriptOpen(false));
+
+  actions.appendChild(clearBtn);
+  actions.appendChild(closeBtn);
   header.appendChild(title);
-  header.appendChild(clearBtn);
+  header.appendChild(actions);
   div.appendChild(header);
 
   const body = document.createElement('div');
@@ -528,55 +572,20 @@ function renderSubtitle(sub: EnhancedSubtitle) {
     }
   }
 
-  // ── English row — always color-coded ─────────────────────────────────────
-  // When per-word glosses are cached, each English word gets the same color index
-  // as its corresponding Japanese/romaji word (exact match).
-  // When glosses aren't cached yet, fall back to the sentence translation split by
-  // spaces with positional colors — still fully colored, just not word-aligned.
+  // ── English row — sentence translation, color-coded per word to match Japanese ─
   translationEl.innerHTML = '';
   translationEl.style.opacity = '1';
   if (translation) {
-    let glossCount = 0;
-    if (tokens.length > 0) {
-      tokens.forEach((wb, i) => {
-        const g = wb.translation;
-        if (g && g !== sub.original && g.length <= 20 && g.trim().split(/\s+/).length <= 3) {
-          translationEl.appendChild(buildWordSpan(g, i, wb, sub, 'en'));
-          glossCount++;
-        }
-      });
-    }
-    // Glosses don't cover enough tokens — use sentence translation with semantically-matched token indices
-    if (glossCount < Math.ceil(tokens.length / 2)) {
-      translationEl.innerHTML = '';
-      const enWords = translation.trim().split(/\s+/).filter(Boolean);
-      const colorIndices = matchEnglishToTokens(enWords, tokens);
-      enWords.forEach((word, i) => {
-        translationEl.appendChild(buildWordSpan(word, colorIndices[i], null, sub, 'en'));
-      });
-    }
+    const enWords = translation.trim().split(/\s+/).filter(Boolean);
+    const colorIndices = matchEnglishToTokens(enWords, tokens);
+    enWords.forEach((word, i) => {
+      translationEl.appendChild(buildWordSpan(word, colorIndices[i] ?? i, null, sub, 'en'));
+    });
   }
 
   appendTranscriptEntry(sub);
 }
 
-function showLoading(text: string, lang: string) {
-  if (!overlay) return;
-  const { translationEl, wordsEl, translitEl } = getOverlayEls();
-
-  // Keep previous translation + transliteration visible but faded — much better UX
-  // than "…". They'll be replaced instantly when the API responds.
-  translationEl.style.opacity = '0.25';
-  translitEl.style.opacity = '0.25';
-  wordsEl.innerHTML = '';
-
-  // Render client-side tokens immediately for the new subtitle — clickable right away
-  clientTokenize(text, lang).forEach((token, i) => {
-    const span = buildWordSpan(token, i, null, null, 'orig');
-    span.style.opacity = '0.6';
-    wordsEl.appendChild(span);
-  });
-}
 
 function showFallback(text: string, lang: string) {
   if (!overlay) return;
@@ -803,7 +812,18 @@ async function handleWordClick(wb: WordBreakdown, sub: EnhancedSubtitle) {
 
 // ── Subtitle processing ───────────────────────────────────────────────────────
 
-async function processSubtitleText(text: string) {
+function withEnglishCaption(sub: EnhancedSubtitle, tStartMs?: number, tEndMs?: number): EnhancedSubtitle {
+  if (!tStartMs) return sub;
+  const windowEnd = tEndMs ?? tStartMs + 600;
+  // Collect all English captions within the Japanese entry's full time window
+  const collected: string[] = [];
+  englishCaptions.forEach((text, t) => {
+    if (t >= tStartMs - 200 && t <= windowEnd + 200) collected.push(text);
+  });
+  return collected.length > 0 ? { ...sub, translation: collected.join(' ') } : sub;
+}
+
+async function processSubtitleText(text: string, tStartMs?: number, tEndMs?: number) {
   if (!overlay) return;
 
   const trimmed = text.trim();
@@ -822,33 +842,29 @@ async function processSubtitleText(text: string) {
     overlay.style.display = 'flex';
     const cached = subtitleCache.get(trimmed)!;
     currentSubtitle = cached;
-    renderSubtitle(cached);
+    renderSubtitle(withEnglishCaption(cached, tStartMs, tEndMs));
     return;
   }
 
   // ── L2: persistent extension cache → ~2ms, avoids loading flash ──────────
-  // This covers subtitles the pre-warm missed (e.g. MutationObserver path,
-  // or if the user skipped into the video past the preload window).
   const persisted = await readFromStorage(lang === 'auto' ? 'auto' : lang, trimmed);
   if (persisted) {
     subtitleCache.set(trimmed, persisted);
     overlay.style.display = 'flex';
     currentSubtitle = persisted;
-    renderSubtitle(persisted);
+    renderSubtitle(withEnglishCaption(persisted, tStartMs, tEndMs));
     return;
   }
 
   // ── L3: network request ───────────────────────────────────────────────────
-  // Only one request at a time; queue the latest text for when the lock releases.
+  // Show original words immediately for correct timing. English/translit rows
+  // keep showing the previous subtitle until the full result is ready.
   if (processingLock) {
     pendingText = text;
     return;
   }
   processingLock = true;
   pendingText = null;
-
-  overlay.style.display = 'flex';
-  showLoading(trimmed, lang); // tokens clickable immediately while we wait
 
   try {
     const token = await getToken();
@@ -872,11 +888,13 @@ async function processSubtitleText(text: string) {
     // Persist to chrome.storage.local for future sessions (fire-and-forget)
     writeToStorage(lang === 'auto' ? 'auto' : lang, trimmed, result);
 
-    currentSubtitle = result;
-    renderSubtitle(result);
+    if (!pendingText) {
+      currentSubtitle = result;
+      renderSubtitle(withEnglishCaption(result, tStartMs, tEndMs));
+    }
   } catch (err) {
     console.warn('[Subly] enhance failed:', (err as Error).message);
-    showFallback(trimmed, lang);
+    if (!pendingText) showFallback(trimmed, lang);
   } finally {
     processingLock = false;
     const queued = pendingText;
@@ -932,6 +950,35 @@ async function fetchCaptionEntries(baseUrl: string): Promise<CaptionEntry[]> {
   } catch {
     return [];
   }
+}
+
+const SENTENCE_END = new Set([...'\u3002\uff1f\uff01.?!']);
+const MAX_MERGE_GAP_MS = 400;
+
+function groupCaptionEntries(entries: CaptionEntry[]): CaptionEntry[] {
+  if (entries.length === 0) return entries;
+  const result: CaptionEntry[] = [];
+  let group = { ...entries[0] };
+
+  for (let i = 1; i < entries.length; i++) {
+    const curr = entries[i];
+    const prevEnd = group.tStartMs + group.dDurationMs;
+    const gap = curr.tStartMs - prevEnd;
+    const isSentenceEnd = SENTENCE_END.has(group.text[group.text.length - 1] ?? '');
+
+    if (!isSentenceEnd && gap < MAX_MERGE_GAP_MS) {
+      group = {
+        tStartMs: group.tStartMs,
+        dDurationMs: curr.tStartMs + curr.dDurationMs - group.tStartMs,
+        text: group.text + (group.text.endsWith(' ') ? '' : ' ') + curr.text,
+      };
+    } else {
+      result.push(group);
+      group = { ...curr };
+    }
+  }
+  result.push(group);
+  return result;
 }
 
 async function preloadUpcomingSubtitles() {
@@ -997,10 +1044,27 @@ async function initPreloading(sourceLang = '') {
     : (tracks.find((t) => t.languageCode && !t.languageCode.startsWith('en') && !t.languageCode.startsWith('a.')) ?? tracks[0]);
   if (!track?.baseUrl) { preloadingInitialized = false; return; }
 
-  captionEntries = await fetchCaptionEntries(track.baseUrl);
+  captionEntries = groupCaptionEntries(await fetchCaptionEntries(track.baseUrl));
   if (captionEntries.length === 0) { preloadingInitialized = false; return; }
 
+  // Timer loop takes over — stop the mutation observer so YouTube's progressive
+  // word-by-word DOM reveals don't trigger partial subtitle updates
+  stopCaptionObserver();
+
   console.log(`[Subly] ${captionEntries.length} caption entries loaded (${track.languageCode})`);
+
+  // Fetch YouTube's English caption track as a high-accuracy translation source.
+  // Prefer non-ASR (manually created) English tracks; fall back to ASR (auto-generated).
+  const enTrack =
+    tracks.find((t) => t.languageCode === 'en') ??
+    tracks.find((t) => t.languageCode?.startsWith('en'));
+  if (enTrack && enTrack.baseUrl !== track.baseUrl) {
+    fetchCaptionEntries(enTrack.baseUrl).then((entries) => {
+      englishCaptions.clear();
+      entries.forEach((e) => englishCaptions.set(e.tStartMs, e.text));
+      console.log(`[Subly] ${entries.length} English caption entries loaded for translation`);
+    }).catch(() => {});
+  }
 
   // ── Pre-warm in-memory cache from persistent storage ─────────────────────
   // One chrome.storage.local.get IPC call fetches ALL matching entries at once.
@@ -1038,6 +1102,7 @@ function stopPreloading() {
 
 // ── Timer-based subtitle delivery ─────────────────────────────────────────────
 // Drives overlay from preloaded JSON3 caption timestamps — zero latency on cache hit.
+const TIMING_OFFSET_MS = 1200; // Show subtitles early to compensate for YouTube caption delay
 
 function stopTimerLoop() {
   if (timerLoopId !== null) {
@@ -1059,7 +1124,7 @@ function startTimerLoop() {
     if (video && !video.paused) {
       const nowMs = video.currentTime * 1000;
       const entry = captionEntries.find(
-        (e) => e.tStartMs <= nowMs && nowMs < e.tStartMs + e.dDurationMs,
+        (e) => e.tStartMs <= nowMs + TIMING_OFFSET_MS && nowMs < e.tStartMs + e.dDurationMs,
       );
 
       if (entry) {
@@ -1070,19 +1135,19 @@ function startTimerLoop() {
           if (cached) {
             (cached as any).tStartMs = entry.tStartMs;
             if (overlay) overlay.style.display = 'flex';
-            renderSubtitle(cached);
+            renderSubtitle(withEnglishCaption(cached, entry.tStartMs, entry.tStartMs + entry.dDurationMs));
             // Immediately trigger preload if next subtitle isn't cached yet
             const next = captionEntries.find((e) => e.tStartMs > entry.tStartMs);
             if (next && !subtitleCache.has(next.text.trim())) {
               preloadUpcomingSubtitles().catch(() => {});
             }
           } else {
-            processSubtitleText(text);
+            processSubtitleText(text, entry.tStartMs, entry.tStartMs + entry.dDurationMs);
           }
         }
       } else if (lastShownTStartMs !== -1) {
-        // Gap between subtitles — hide overlay and allow the next entry to trigger
-        if (overlay) overlay.style.display = 'none';
+        // Gap between subtitles — keep overlay visible (last subtitle stays on screen)
+        // Reset tracking so next entry fires correctly
         lastShownTStartMs = -1;
       }
     }
@@ -1119,11 +1184,15 @@ function startCaptionObserver() {
   const container = document.querySelector('.ytp-caption-window-container');
   if (!container) return;
 
+  // Debounce timer for text appearing (YouTube reveals words progressively)
+  let appearTimer: number | null = null;
+
   captionObserver = new MutationObserver(() => {
     const text = getCaptionText();
     if (!text) {
-      // Debounce: only reset lastText if silence persists for 2s — prevents re-processing the
-      // same line after a brief gap (e.g. caption window momentarily goes empty between segments)
+      // Cancel any pending appear debounce
+      if (appearTimer !== null) { clearTimeout(appearTimer); appearTimer = null; }
+      // Debounce silence: only reset after 2s gap
       if (silenceTimer === null) {
         silenceTimer = window.setTimeout(() => { lastText = ''; silenceTimer = null; }, 2000);
       }
@@ -1131,8 +1200,16 @@ function startCaptionObserver() {
     }
     if (silenceTimer !== null) { clearTimeout(silenceTimer); silenceTimer = null; }
     if (text === lastText) return;
-    lastText = text;
-    processSubtitleText(text);
+
+    // Debounce text appearing: wait 400ms for YouTube to finish revealing the full line
+    if (appearTimer !== null) clearTimeout(appearTimer);
+    appearTimer = window.setTimeout(() => {
+      appearTimer = null;
+      const stable = getCaptionText();
+      if (!stable || stable === lastText) return;
+      lastText = stable;
+      processSubtitleText(stable);
+    }, 400);
   });
 
   captionObserver.observe(container, { childList: true, subtree: true, characterData: true });
@@ -1166,7 +1243,8 @@ function waitForElement(selector: string, callback: (el: Element) => void, timeo
 function enableSubly() {
   if (!overlay) overlay = createOverlay();
   if (!transcriptEl) transcriptEl = createTranscript();
-  transcriptEl.classList.remove('subly-transcript--hidden');
+  if (!transcriptToggleBtn) createTranscriptToggle();
+  setTranscriptOpen(transcriptOpen);
   startPositionTracking();
   // Try timer-based delivery first (requires a JSON3 caption track)
   if (!preloadingInitialized) initPreloading().catch(() => {});
@@ -1184,6 +1262,7 @@ function disableSubly() {
   stopPositionTracking();
   if (overlay) overlay.style.display = 'none';
   if (transcriptEl) transcriptEl.classList.add('subly-transcript--hidden');
+  if (transcriptToggleBtn) transcriptToggleBtn.style.display = 'none';
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────
@@ -1212,6 +1291,7 @@ chrome.runtime.onMessage.addListener((message: { type: string; enabled?: boolean
 document.addEventListener('yt-navigate-finish', () => {
   lastText = '';
   subtitleCache.clear();
+  englishCaptions.clear();
   subtitleHistory.length = 0;
   stopCaptionObserver();
   stopTimerLoop();
