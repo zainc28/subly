@@ -29,4 +29,4 @@ Subtitles hit an Express backend that checks a 2-tier cache before calling Azure
 
 ## Stack
 
-TypeScript · Node.js/Express · React · Tailwind · Supabase · Azure Cognitive Services · Groq · Stripe · Chrome Extensions API
+TypeScript · Node.js/Express · React · Tailwind · Supabase · Azure · Groq · Stripe · Chrome Extensions API
