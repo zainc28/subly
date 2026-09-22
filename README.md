@@ -1,6 +1,6 @@
 # Subly
 
-A Chrome extension and web app that adds intelligent language-learning subtitles to YouTube videos. Three synchronized layers — original, romanization, translation — are color-coded token by token so you can follow along word by word.
+A Chrome extension and web app that adds intelligent language-learning subtitles to YouTube videos. Three synchronized layers, original, romanization, translation. are color-coded token by token so you can follow along word by word.
 
 ## Demo
 
@@ -23,7 +23,7 @@ JWT authentication via Supabase Auth. Usage is tracked per user per day against 
 Any word can be saved to a personal dictionary with its translation, romanization, and the sentence it appeared in as context. The dictionary page lets you review and export saved words.
 
 **Translation Pipeline**
-Subtitles hit an Express backend that checks a 2-tier cache before calling Azure Cognitive Services. A SHA-256 hash of the normalized text is the cache key — repeat subtitles are served from Supabase under 2ms. For word definitions, a Groq LLM receives not just the clicked word but the surrounding transcript lines as context, so definitions reflect how the word is actually being used in the scene rather than returning a generic dictionary entry.
+Subtitles hit an Express backend that checks a 2-tier cache before calling Azure Cognitive Services. A SHA-256 hash of the normalized text is the cache key, repeat subtitles are served from Supabase under 2ms. For word definitions, a Groq LLM receives not just the clicked word but the surrounding transcript lines as context, so definitions reflect how the word is actually being used in the scene rather than returning a generic dictionary entry.
 
 ---
 
